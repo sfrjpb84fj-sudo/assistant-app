@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16171a" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Assistant">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>Assistant</title>
+</head>
+<body>
+  <!-- Sign-in -->
+  <section id="login" class="login" hidden>
+    <div class="login-card">
+      <img src="/static/icon-192.png" alt="" class="login-icon">
+      <h1>Your assistant</h1>
+      <p class="muted">Enter your passcode to continue.</p>
+      <form id="login-form" autocomplete="off">
+        <input id="passcode" type="password" placeholder="Passcode" autocomplete="current-password" required>
+        <button type="submit" class="primary">Sign in</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- App -->
+  <main id="app" hidden>
+    <header class="topbar">
+      <h1 id="view-title">Chat</h1>
+      <button id="menu-btn" class="icon-btn" aria-label="More">⋯</button>
+    </header>
+
+    <div id="menu" class="menu" hidden>
+      <button data-action="clear-chat">Clear chat history</button>
+      <button data-action="logout">Sign out</button>
+    </div>
+
+    <!-- Chat -->
+    <section id="view-chat" class="view">
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="attach-tray" class="attach-tray" hidden></div>
+      <form id="composer" class="composer">
+        <button type="button" id="attach-btn" class="round ghost" aria-label="Attach a photo or PDF">＋</button>
+        <input id="file-input" type="file" accept="image/*,application/pdf" multiple hidden>
+        <textarea id="input" rows="1" placeholder="Ask or tell me anything…" enterkeyhint="send"></textarea>
+        <button type="button" id="mic-btn" class="round ghost" aria-label="Talk">🎙</button>
+        <button type="submit" id="send" class="round send" aria-label="Send">↑</button>
+      </form>
+    </section>
+
+    <!-- To-dos -->
+    <section id="view-tasks" class="view" hidden>
+      <div class="segmented" role="tablist">
+        <button data-list="work" class="active">Work</button>
+        <button data-list="personal">Personal</button>
+      </div>
+      <form id="task-form" class="add-row">
+        <input id="task-title" placeholder="Add a to-do" maxlength="300" required>
+        <input id="task-due" type="date" aria-label="Due date">
+        <button type="submit" class="primary small">Add</button>
+      </form>
+      <ul id="task-list" class="list"></ul>
+      <details id="done-wrap" class="done-wrap">
+        <summary>Completed <span id="done-count"></span></summary>
+        <ul id="done-list" class="list"></ul>
+      </details>
+    </section>
+
+    <!-- Memory -->
+    <section id="view-memory" class="view" hidden>
+      <p class="muted pad">Things your assistant remembers about you. It uses these in every chat.</p>
+      <form id="memory-form" class="add-row">
+        <input id="memory-fact" placeholder="Add something to remember" maxlength="500" required>
+        <button type="submit" class="primary small">Save</button>
+      </form>
+      <ul id="memory-list" class="list"></ul>
+    </section>
+
+    <!-- More / settings -->
+    <section id="view-more" class="view" hidden>
+      <div class="card">
+        <h2>Notifications</h2>
+        <p id="push-status" class="muted"></p>
+        <div class="row-btns">
+          <button id="push-on" class="primary small">Turn on notifications</button>
+          <button id="push-test" class="secondary small">Send a test</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Voice</h2>
+        <label class="switch-row">
+          <span>Speak replies out loud</span>
+          <input id="speak-toggle" type="checkbox">
+        </label>
+        <p class="muted small-text">Replies are always spoken after you use the 🎙 button.</p>
+      </div>
+
+      <div class="card">
+        <h2>Check-ins</h2>
+        <div class="field-row">
+          <label for="brief-days">Morning brief</label>
+          <select id="brief-days"><option value="weekdays">Weekdays</option><option value="daily">Every day</option><option value="off">Off</option></select>
+          <input id="brief-time" type="time">
+        </div>
+        <div class="field-row">
+          <label for="review-day">Weekly review</label>
+          <select id="review-day">
+            <option value="mon">Mondays</option><option value="tue">Tuesdays</option><option value="wed">Wednesdays</option>
+            <option value="thu">Thursdays</option><option value="fri">Fridays</option><option value="sat">Saturdays</option>
+            <option value="sun">Sundays</option><option value="off">Off</option>
+          </select>
+          <input id="review-time" type="time">
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Upcoming reminders</h2>
+        <ul id="reminder-list" class="mini-list"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Routines</h2>
+        <p class="muted small-text">Repeatable checklists. Create one in chat, e.g. "Make a monthly routine on the 5th for my month-end close: pull reports, reconcile, send summary."</p>
+        <ul id="routine-list" class="mini-list"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Spending this month</h2>
+        <p id="spend-total" class="big-number"></p>
+        <ul id="spend-cats" class="mini-list"></ul>
+        <details>
+          <summary class="muted small-text">All purchases</summary>
+          <ul id="spend-items" class="mini-list"></ul>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>Siri</h2>
+        <p class="muted small-text">Your private key for the "Hey Siri" shortcut. The setup guide shows how to use it.</p>
+        <div class="key-row">
+          <code id="shortcut-key">••••••••••••</code>
+          <button id="key-show" class="secondary small">Show</button>
+          <button id="key-copy" class="secondary small">Copy</button>
+        </div>
+        <p class="muted small-text">Shortcut address: <code id="shortcut-url"></code></p>
+        <button id="key-new" class="link-btn">Make a new key (the old one stops working)</button>
+      </div>
+    </section>
+
+    <nav class="tabbar">
+      <button data-view="chat" class="active"><span class="tab-ico">💬</span>Chat</button>
+      <button data-view="tasks"><span class="tab-ico">✓</span>To-dos</button>
+      <button data-view="memory"><span class="tab-ico">✦</span>Memory</button>
+      <button data-view="more"><span class="tab-ico">⚙︎</span>More</button>
+    </nav>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

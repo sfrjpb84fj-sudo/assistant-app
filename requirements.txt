@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn>=0.30
+anthropic>=0.40
+pywebpush>=2.0
+cryptography>=42
