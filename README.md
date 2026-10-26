@@ -3,6 +3,7 @@
 Your own private AI assistant, opened from an icon on your iPhone (or by saying "Hey Siri"). It runs on a small server that only your own devices can reach, so it works anywhere without your Mac being on.
 
 **What it can do**
+- **Home screen** with a live clock dial, a countdown to your next reminder, weather, the date, and a Talk button
 - **Chat** in plain language, by typing or talking
 - **To-do lists** for work and personal life
 - **Memory** of things you tell it about yourself
@@ -134,6 +135,7 @@ Now say **"Hey Siri, Jarvis"**, wait for the listening sound, and talk. For exam
 - "Make a monthly routine on the 5th for my month-end close: pull reports, reconcile, send summary. Make them due 2 days later."
 - "How much did I spend on groceries this month?"
 - "Remember that I work from home on Wednesdays and Fridays."
+- Tap the Weather panel on Home (or say "set my weather city to Irvine, CA") to show your local weather.
 - Tap **🎙** and just talk. When you use the mic, it answers out loud. You can also turn on **Speak replies out loud** in More.
 
 ## Updating to a new version

@@ -17,6 +17,8 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -60,6 +62,7 @@ DEFAULT_SETTINGS = {
     "brief_days": "weekdays",     # weekdays | daily | off
     "review_day": "mon",          # mon..sun | off
     "review_time": "08:00",
+    "weather_city": "",           # e.g. "Irvine, California"
 }
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -601,6 +604,12 @@ def update_settings(**kw) -> dict:
     if kw.get("review_time") is not None:
         datetime.strptime(kw["review_time"], "%H:%M")
         set_setting("review_time", kw["review_time"])
+    if kw.get("weather_city") is not None:
+        city = kw["weather_city"].strip()[:80]
+        if city and not find_place(city):
+            raise ValueError(f"Couldn't find a place called '{city}'. Try 'City, State' or 'City, Country'.")
+        set_setting("weather_city", city)
+        _weather_cache.clear()
     return current_settings()
 
 
@@ -613,6 +622,7 @@ class SettingsIn(BaseModel):
     brief_days: str | None = None
     review_day: str | None = None
     review_time: str | None = None
+    weather_city: str | None = None
 
 
 @app.get("/api/settings")
@@ -663,6 +673,90 @@ def api_push_test(_=Depends(require_auth)):
     if not n:
         raise HTTPException(400, "No phone is set up for notifications yet, or sending failed.")
     return {"sent": n}
+
+
+# ================================================================ weather (Open-Meteo: free, no account or key)
+_weather_cache: dict = {}
+WEATHER_TTL = 20 * 60
+WMO = {0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Cloudy", 45: "Fog", 48: "Fog",
+       51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+       66: "Freezing rain", 67: "Freezing rain", 71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow",
+       80: "Showers", 81: "Showers", 82: "Heavy showers", 85: "Snow showers", 86: "Snow showers",
+       95: "Thunderstorms", 96: "Thunderstorms", 99: "Thunderstorms"}
+US_STATES = {"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California", "CO": "Colorado",
+             "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+             "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+             "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+             "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+             "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+             "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
+             "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas",
+             "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+             "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia"}
+
+
+def _get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "personal-assistant/1.0"})
+    with urllib.request.urlopen(req, timeout=6) as r:
+        return json.loads(r.read().decode())
+
+
+def find_place(city: str) -> dict | None:
+    """'Irvine, CA' -> {'name','region','lat','lon'} using Open-Meteo geocoding."""
+    name, _, region = (p.strip() for p in city.partition(","))
+    region = US_STATES.get(region.upper(), region)
+    try:
+        data = _get_json("https://geocoding-api.open-meteo.com/v1/search?" +
+                         urllib.parse.urlencode({"name": name, "count": 10, "language": "en"}))
+    except Exception as e:
+        log.warning("geocoding failed: %r", e)
+        return None
+    results = data.get("results") or []
+    if region:
+        rl = region.lower()
+        match = [r for r in results if rl in (r.get("admin1", "") + " " + r.get("country", "") + " " +
+                                              r.get("country_code", "")).lower()]
+        results = match or results
+    if not results:
+        return None
+    r = results[0]
+    return {"name": r["name"], "region": r.get("admin1") or r.get("country", ""),
+            "lat": r["latitude"], "lon": r["longitude"]}
+
+
+def get_weather() -> dict | None:
+    city = get_setting("weather_city")
+    if not city:
+        return None
+    hit = _weather_cache.get(city)
+    if hit and time.time() - hit[0] < (WEATHER_TTL if hit[1] else 120):
+        return hit[1]
+    result = None
+    place = find_place(city)
+    if place:
+        try:
+            d = _get_json("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode({
+                "latitude": place["lat"], "longitude": place["lon"], "timezone": "auto",
+                "current": "temperature_2m,weather_code", "daily": "temperature_2m_max,temperature_2m_min",
+                "temperature_unit": "fahrenheit", "forecast_days": 1}))
+            result = {
+                "place": place["name"], "region": place["region"],
+                "temp": round(d["current"]["temperature_2m"]), "condition": WMO.get(d["current"]["weather_code"], "—"),
+                "code": d["current"]["weather_code"],
+                "high": round(d["daily"]["temperature_2m_max"][0]), "low": round(d["daily"]["temperature_2m_min"][0]),
+            }
+        except Exception as e:
+            log.warning("weather failed: %r", e)
+    _weather_cache[city] = (time.time(), result)
+    return result
+
+
+@app.get("/api/weather")
+def api_weather(_=Depends(require_auth)):
+    if not get_setting("weather_city"):
+        return {"set": False}
+    w = get_weather()
+    return {"set": True, "ok": bool(w)} | (w or {})
 
 
 # ================================================================ Claude: tools
@@ -729,10 +823,13 @@ TOOLS = [
         "review_day mon..sun|off, review_time HH:MM."),
      "input_schema": {"type": "object", "properties": {
          "brief_time": {"type": "string"}, "brief_days": {"type": "string"},
-         "review_day": {"type": "string"}, "review_time": {"type": "string"}}}},
+         "review_day": {"type": "string"}, "review_time": {"type": "string"},
+         "weather_city": {"type": "string", "description": "City for the weather panel, e.g. 'Irvine, California'"}}}},
+    {"name": "get_weather", "description": "Current weather and today's high/low for the user's saved city.",
+     "input_schema": {"type": "object", "properties": {}}},
 ]
 
-READ_ONLY_TOOLS = {"list_tasks", "list_reminders", "list_expenses", "list_routines"}
+READ_ONLY_TOOLS = {"list_tasks", "list_reminders", "list_expenses", "list_routines", "get_weather"}
 
 
 def run_tool(name: str, args: dict) -> str:
@@ -773,6 +870,8 @@ def run_tool(name: str, args: dict) -> str:
             return json.dumps({"deleted": delete_routine(int(a["id"]))})
         if name == "update_settings":
             return json.dumps({"settings": update_settings(**a)})
+        if name == "get_weather":
+            return json.dumps(get_weather() or {"error": "No weather city set, or weather is unavailable right now."})
         return json.dumps({"error": f"unknown tool {name}"})
     except (ValueError, KeyError, TypeError) as e:
         return json.dumps({"error": str(e)})
@@ -816,7 +915,8 @@ When {USER_NAME} sends a receipt, log it as an expense (date, merchant, total, a
 amount. For other photos or PDFs, read them and help with whatever they ask. If something looks overdue or \
 important, mention it briefly when relevant.
 
-You cannot yet read email or calendars; if asked, say that's coming in a future update.
+You cannot yet read email or calendars; if asked, say that's coming in a future update. If asked about the \
+weather and no city is saved, ask which city and save it with update_settings.
 
 {context_block()}
 """
@@ -986,7 +1086,10 @@ def make_brief(kind: str) -> str:
     """kind = 'morning' or 'weekly'. Written by Claude; falls back to a plain list if Claude is unreachable."""
     today = now_local().date()
     if kind == "morning":
-        ask = (f"Write {USER_NAME}'s morning brief for today. Lead with a one-line greeting, then what's overdue, "
+        w = get_weather()
+        wx = (f" Today's weather in {w['place']}: {w['condition'].lower()}, {w['temp']}°F now, "
+              f"high {w['high']}° / low {w['low']}°. Mention it in a few words.") if w else ""
+        ask = (f"Write {USER_NAME}'s morning brief for today.{wx} Lead with a one-line greeting, then what's overdue, "
                "what's due today, and today's reminders. Mention the next few days only if notable. Keep it under "
                "120 words. If there's nothing, say so cheerfully.")
     else:
