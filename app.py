@@ -1862,9 +1862,13 @@ def chat_with_claude(user_content, voice: bool = False) -> tuple[str, bool]:
     messages = history + [{"role": "user", "content": user_content}]
     changed = False
     client = get_client()
+    # Build the instructions and tool list ONCE per reply. Claude's internal reasoning is tied to the exact
+    # instructions it was given, so they must not change between the steps of one reply (e.g. after a tool
+    # adds a task, or the clock ticks over a minute) or Claude rejects the follow-up step.
+    system = system_prompt(voice)
+    tools = TOOLS + offered_google_tools()
     for _ in range(MAX_TOOL_ROUNDS):
-        resp = client.messages.create(model=MODEL, max_tokens=2048, system=system_prompt(voice),
-                                      tools=TOOLS + offered_google_tools(), messages=messages)
+        resp = client.messages.create(model=MODEL, max_tokens=4096, system=system, tools=tools, messages=messages)
         if resp.stop_reason != "tool_use":
             reply = "".join(b.text for b in resp.content if b.type == "text").strip()
             return reply or "(no reply)", changed
@@ -1880,6 +1884,16 @@ def chat_with_claude(user_content, voice: bool = False) -> tuple[str, bool]:
 
 
 def friendly_error(e: Exception) -> str:
+    if type(e).__name__ == "BadRequestError":
+        # Show Claude's actual reason (e.g. low credit balance, image problem) instead of a guess.
+        detail = ""
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            detail = (body.get("error") or {}).get("message", "") if isinstance(body.get("error"), dict) else ""
+        detail = detail or str(getattr(e, "message", "") or e)
+        if "credit balance" in detail.lower():
+            return "Your Anthropic account is out of credit. Add credit at console.anthropic.com → Billing."
+        return f"Claude couldn't handle that request: {detail[:240]}"
     return {
         "AuthenticationError": "The API key was rejected. Check ANTHROPIC_API_KEY on the server.",
         "RateLimitError": "Too many requests right now. Try again in a minute.",
