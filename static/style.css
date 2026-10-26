@@ -460,3 +460,26 @@ a.primary { display: inline-block; text-decoration: none; }
 #ic-default { max-width: 62vw; }
 .account-picker { display: grid; gap: 8px; margin: 4px 0 12px; }
 #g-select { width: 100%; max-width: none; }
+
+/* ---------- Brain tab */
+.brain-pane { padding-bottom: 24px; }
+.profile-field { display: grid; gap: 6px; margin-bottom: 14px; }
+.profile-field span { font-size: 14px; font-weight: 600; }
+.profile-field textarea { resize: none; min-height: 72px; line-height: 1.4; }
+.pane-actions { margin-top: 4px; }
+.item.mission .row-btns { margin-top: 8px; }
+.item.mission details { margin-top: 4px; }
+.item.mission details p { margin: 4px 0; white-space: pre-wrap; }
+.item.paused .title { color: var(--muted); }
+#mission-new summary { font-weight: 600; padding: 2px 0 8px; }
+#mission-new .field-row.two { grid-template-columns: 1fr auto; }
+#mission-schedule { width: 100%; }
+#memory-cat { flex: none; width: auto; }
+#memory-filter { margin-bottom: 10px; }
+.chip-cat { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--text); margin-right: 2px; }
+html[data-theme="hud"] .chip-cat { border-radius: 3px; color: var(--accent); border: 1px solid var(--line); background: rgba(95, 227, 255, .06); }
+html[data-theme="hud"] .profile-field span { font-family: var(--display); letter-spacing: .02em; }
+#model-select { max-width: 60vw; }
+#personality-card { margin: 0 16px 14px; }
+#personality-select { width: 100%; margin-bottom: 6px; }
+#personality-notes { resize: none; margin-top: 4px; }

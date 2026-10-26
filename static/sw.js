@@ -1,6 +1,6 @@
 // Keeps the app shell available so it opens fast, and shows push notifications.
 // Never caches your data (/api/...).
-const CACHE = "assistant-v10";
+const CACHE = "assistant-v13";
 const SHELL = ["/", "/static/style.css", "/static/app.js", "/static/manifest.json", "/static/icon-192.png", "/static/chakra-petch-latin-500-normal.woff2", "/static/chakra-petch-latin-600-normal.woff2"];
 
 self.addEventListener("install", (e) => {

@@ -120,14 +120,14 @@ $("#login-form").addEventListener("submit", async (e) => {
 });
 
 // ---------------------------------------------------------- navigation
-const titles = { home: "", chat: "Chat", tasks: "To-dos", memory: "Memory", more: "More" };
+const titles = { home: "", chat: "Chat", tasks: "To-dos", memory: "Brain", more: "More" };
 function switchView(name) {
   $$(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   for (const v of Object.keys(titles)) $(`#view-${v}`).hidden = v !== name;
   $("#view-title").textContent = name === "home" ? assistantName : titles[name];
   if (name === "home") loadHome();
   if (name === "tasks") loadTasks();
-  if (name === "memory") loadMemories();
+  if (name === "memory") loadBrain();
   if (name === "more") loadMore();
   if (name === "chat") { loadMessages(); }
 }
@@ -463,19 +463,191 @@ $("#task-form").addEventListener("submit", async (e) => {
   } catch (err) { toast(err.message); }
 });
 
-// ---------------------------------------------------------- memory
+// ---------------------------------------------------------- Brain: about you, on its own, memories
+const PROFILE_HINTS = {
+  about: "Your name, where you live, languages, what matters to you…",
+  work: "Your role and company, what a normal week looks like, tools you use, recurring work…",
+  goals: "What you're working toward this year (career, money, health, skills) and why…",
+  preferences: "How you like things done, e.g. bullet points not paragraphs; no meetings before 9; remind me the night before…",
+  people: "Who matters and how you refer to them: your manager, family, close friends…",
+};
+let brainPane = "about", allMemories = [];
+
+$$("#brain-tabs button").forEach((b) => b.addEventListener("click", () => {
+  brainPane = b.dataset.brain;
+  $$("#brain-tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  $$(".brain-pane").forEach((p) => (p.hidden = p.id !== "brain-" + brainPane));
+  loadBrain();
+}));
+
+async function loadBrain() {
+  if (brainPane === "about") return loadProfile();
+  if (brainPane === "missions") return loadMissions();
+  return loadMemories();
+}
+
+const PERSONALITY_DESC = {
+  jarvis: "Polished and unflappable, with dry, understated wit. Anticipates what you need.",
+  friend: "Warm and encouraging. Celebrates your wins and checks in on how things went.",
+  coach: "Direct and candid. No fluff, pushes back on weak plans, holds you to your goals.",
+  playful: "Upbeat and cheeky. Jokes, callbacks to past chats, light teasing.",
+  plain: "Claude's natural voice, no extra character.",
+};
+async function loadPersonality() {
+  const b = await api("/api/brain");
+  const sel = $("#personality-select");
+  if (!sel.options.length) for (const [k, name] of Object.entries(b.personalities)) {
+    const o = document.createElement("option"); o.value = k; o.textContent = name; sel.appendChild(o);
+  }
+  sel.value = b.personality;
+  $("#personality-desc").textContent = PERSONALITY_DESC[b.personality] || "";
+  $("#personality-notes").value = b.personality_notes || "";
+  $("#personality-notes").dataset.saved = b.personality_notes || "";
+}
+$("#personality-select").addEventListener("change", async (e) => {
+  await api("/api/brain", { method: "POST", body: { personality: e.target.value } });
+  $("#personality-desc").textContent = PERSONALITY_DESC[e.target.value] || "";
+  toast("Personality updated");
+});
+$("#personality-notes").addEventListener("blur", async (e) => {
+  if (e.target.value === e.target.dataset.saved) return;
+  await api("/api/brain", { method: "POST", body: { personality_notes: e.target.value } });
+  e.target.dataset.saved = e.target.value; toast("Saved");
+});
+
+async function loadProfile() {
+  loadPersonality();
+  const { sections, profile } = await api("/api/profile");
+  const box = $("#profile-fields"); box.innerHTML = "";
+  for (const [key, label] of Object.entries(sections)) {
+    const wrap = document.createElement("label"); wrap.className = "profile-field";
+    const span = document.createElement("span"); span.textContent = label;
+    const ta = document.createElement("textarea");
+    ta.rows = 3; ta.maxLength = 3000; ta.placeholder = PROFILE_HINTS[key] || ""; ta.value = profile[key] || "";
+    const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, 320) + "px"; };
+    ta.addEventListener("input", grow);
+    let saved = ta.value;
+    ta.addEventListener("blur", async () => {
+      if (ta.value === saved) return;
+      try { await api("/api/profile", { method: "POST", body: { section: key, text: ta.value } }); saved = ta.value; toast("Saved"); }
+      catch (err) { toast(err.message); }
+    });
+    wrap.append(span, ta); box.appendChild(wrap);
+    requestAnimationFrame(grow);
+  }
+}
+
+$("#interview-btn").addEventListener("click", () => {
+  switchView("chat");
+  sendMessage("Interview me so you really know me: who I am, my work, my goals, how I like things done, and the people in my life. Ask one short question at a time, and save what you learn to my profile and memory as we go.");
+});
+
+const SCHEDULES = [
+  ["daily", "Every day"], ["weekdays", "Weekdays"],
+  ["weekly:mon", "Mondays"], ["weekly:tue", "Tuesdays"], ["weekly:wed", "Wednesdays"], ["weekly:thu", "Thursdays"],
+  ["weekly:fri", "Fridays"], ["weekly:sat", "Saturdays"], ["weekly:sun", "Sundays"],
+  ["monthly:1", "1st of each month"], ["monthly:15", "15th of each month"],
+  ["every:1", "Every hour (7am–9pm)"], ["every:2", "Every 2 hours (7am–9pm)"], ["every:3", "Every 3 hours (7am–9pm)"], ["every:4", "Every 4 hours (7am–9pm)"],
+];
+(function fillSchedules() {
+  const sel = $("#mission-schedule");
+  for (const [v, t] of SCHEDULES) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
+  sel.value = "weekdays";
+  sel.addEventListener("change", () => ($("#mission-time").hidden = sel.value.startsWith("every")));
+})();
+function fmtTime(hm) { const [h, m] = hm.split(":").map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+function scheduleText(sch, at) {
+  const known = SCHEDULES.find(([v]) => v === sch);
+  let label = known ? known[1] : sch.startsWith("monthly:") ? `Day ${sch.split(":")[1]} of each month` : sch;
+  return sch.startsWith("every") ? label : `${label} at ${fmtTime(at)}`;
+}
+
+async function loadMissions() {
+  const list = await api("/api/missions");
+  const ul = $("#mission-list"); ul.innerHTML = "";
+  if (!list.length) ul.innerHTML = '<li class="list-empty">No standing instructions yet.</li>';
+  for (const m of list) {
+    const li = document.createElement("li"); li.className = "item mission" + (m.enabled ? "" : " paused");
+    const body = document.createElement("div"); body.className = "body";
+    const title = document.createElement("div"); title.className = "title"; title.textContent = m.name;
+    const meta = document.createElement("div"); meta.className = "meta";
+    meta.textContent = (m.enabled ? "" : "Paused · ") + scheduleText(m.schedule, m.at);
+    const det = document.createElement("details");
+    const sum = document.createElement("summary"); sum.className = "small-text muted"; sum.textContent = "Details";
+    const ins = document.createElement("p"); ins.className = "small-text"; ins.textContent = m.instruction;
+    det.append(sum, ins);
+    if (m.last_result) {
+      const last = document.createElement("p"); last.className = "small-text muted";
+      last.textContent = `Last run ${m.last_run}: ${m.last_result}`;
+      det.appendChild(last);
+    }
+    const acts = document.createElement("div"); acts.className = "row-btns";
+    const run = document.createElement("button"); run.className = "secondary small"; run.textContent = "Run now";
+    run.addEventListener("click", async () => {
+      run.disabled = true; run.textContent = "Running…";
+      try {
+        const { result } = await api(`/api/missions/${m.id}/run`, { method: "POST" });
+        toast(result === "[quiet]" ? "Done. Nothing needed your attention." : "Done. See Chat for the result.");
+        loadMissions();
+      } catch (err) { toast(err.message); run.disabled = false; run.textContent = "Run now"; }
+    });
+    const tog = document.createElement("button"); tog.className = "secondary small"; tog.textContent = m.enabled ? "Pause" : "Resume";
+    tog.addEventListener("click", async () => { await api(`/api/missions/${m.id}`, { method: "PATCH", body: { enabled: !m.enabled } }); loadMissions(); });
+    const del = document.createElement("button"); del.className = "secondary small"; del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      if (!confirm(`Delete "${m.name}"?`)) return;
+      await api(`/api/missions/${m.id}`, { method: "DELETE" }); loadMissions();
+    });
+    acts.append(run, tog, del);
+    body.append(title, meta, det, acts);
+    li.appendChild(body); ul.appendChild(li);
+  }
+}
+
+$("#mission-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/missions", { method: "POST", body: {
+      name: $("#mission-name").value, instruction: $("#mission-text").value,
+      schedule: $("#mission-schedule").value, time: $("#mission-time").value || "08:00" } });
+    $("#mission-name").value = ""; $("#mission-text").value = ""; $("#mission-new").open = false;
+    toast("Saved. It will run on schedule.");
+    loadMissions();
+  } catch (err) { toast(err.message); }
+});
+
+const CAT_LABELS = { preference: "Preference", goal: "Goal", work: "Work", person: "Person", project: "Project", routine: "Routine", fact: "Fact" };
+(function fillCats() {
+  const sel = $("#memory-cat");
+  for (const [v, t] of Object.entries(CAT_LABELS)) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
+  sel.value = "fact";
+})();
+
 async function loadMemories() {
-  const mems = await api("/api/memories");
+  const [mems, brain] = await Promise.all([api("/api/memories"), api("/api/brain")]);
+  allMemories = mems;
+  $("#learn-toggle").checked = brain.learn_nightly;
+  $("#web-toggle").checked = brain.web_search;
+  $("#model-select").value = brain.model;
+  $("#learn-last").textContent = brain.last_learn ? "Last learned " + brain.last_learn : "It reviews the day's chats at 11:30 PM and saves what matters.";
+  renderMemories();
+}
+
+function renderMemories() {
+  const q = $("#memory-filter").value.trim().toLowerCase();
   const ul = $("#memory-list"); ul.innerHTML = "";
-  if (!mems.length) ul.innerHTML = '<li class="list-empty">Nothing saved yet. Say "remember that…" in chat, or add something above.</li>';
-  for (const m of mems) {
-    const li = document.createElement("li");
-    li.className = "item";
-    const body = document.createElement("div");
-    body.className = "body";
-    body.innerHTML = '<div class="title"></div><div class="meta"></div>';
-    body.querySelector(".title").textContent = m.fact;
-    body.querySelector(".meta").textContent = "Saved " + m.created_at.slice(0, 10);
+  const shown = allMemories.filter((m) => !q || (m.fact + " " + m.category).toLowerCase().includes(q))
+    .sort((a, b) => b.id - a.id);
+  if (!shown.length) ul.innerHTML = `<li class="list-empty">${q ? "No matches." : "Nothing saved yet. Tell your assistant about yourself, or add something above."}</li>`;
+  for (const m of shown) {
+    const li = document.createElement("li"); li.className = "item";
+    const body = document.createElement("div"); body.className = "body";
+    const title = document.createElement("div"); title.className = "title"; title.textContent = m.fact;
+    const meta = document.createElement("div"); meta.className = "meta";
+    const chip = document.createElement("span"); chip.className = "chip-cat"; chip.textContent = CAT_LABELS[m.category] || m.category;
+    const src = { you: "added by you", chat: "noted in chat", learned: "learned" }[m.source] || m.source;
+    meta.append(chip, ` ${src} · ${m.created_at.slice(0, 10)}`);
+    body.append(title, meta);
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "×"; del.setAttribute("aria-label", "Forget");
     del.addEventListener("click", async () => {
@@ -483,18 +655,27 @@ async function loadMemories() {
       await api(`/api/memories/${m.id}`, { method: "DELETE" });
       loadMemories();
     });
-    li.append(body, del);
-    ul.appendChild(li);
+    li.append(body, del); ul.appendChild(li);
   }
 }
+$("#memory-filter").addEventListener("input", renderMemories);
 
 $("#memory-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("/api/memories", { method: "POST", body: { fact: $("#memory-fact").value } });
+    await api("/api/memories", { method: "POST", body: { fact: $("#memory-fact").value, category: $("#memory-cat").value } });
     $("#memory-fact").value = "";
     loadMemories();
   } catch (err) { toast(err.message); }
+});
+$("#learn-toggle").addEventListener("change", (e) => api("/api/brain", { method: "POST", body: { learn_nightly: e.target.checked } }).then(() => toast("Saved")));
+$("#model-select").addEventListener("change", (e) => api("/api/brain", { method: "POST", body: { model: e.target.value } }).then(() => toast("Saved")));
+$("#web-toggle").addEventListener("change", (e) => api("/api/brain", { method: "POST", body: { web_search: e.target.checked } }).then(() => toast("Saved")));
+$("#learn-now").addEventListener("click", async (e) => {
+  const b = e.currentTarget; b.disabled = true; b.textContent = "Learning…";
+  try { const { summary } = await api("/api/brain/learn-now", { method: "POST" }); toast(summary); loadMemories(); }
+  catch (err) { toast(err.message); }
+  finally { b.disabled = false; b.textContent = "Learn from recent chats now"; }
 });
 
 // ---------------------------------------------------------- More tab

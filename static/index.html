@@ -125,14 +125,68 @@
       </details>
     </section>
 
-    <!-- Memory -->
+    <!-- Brain: who you are, standing instructions, memories -->
     <section id="view-memory" class="view" hidden>
-      <p class="muted pad">Things your assistant remembers about you. It uses these in every chat.</p>
-      <form id="memory-form" class="add-row">
-        <input id="memory-fact" placeholder="Add something to remember" maxlength="500" required>
-        <button type="submit" class="primary small">Save</button>
-      </form>
-      <ul id="memory-list" class="list"></ul>
+      <div class="segmented" role="tablist" id="brain-tabs">
+        <button data-brain="about" class="active">About you</button>
+        <button data-brain="missions">On its own</button>
+        <button data-brain="memories">Memories</button>
+      </div>
+
+      <div id="brain-about" class="brain-pane">
+        <div class="card" id="personality-card">
+          <h2>Its personality</h2>
+          <select id="personality-select" aria-label="Personality"></select>
+          <p id="personality-desc" class="muted small-text"></p>
+          <textarea id="personality-notes" rows="2" maxlength="1000" placeholder="Your own touches, e.g. call me Kai; roast me a little when I procrastinate; throw in some Korean now and then"></textarea>
+        </div>
+        <p class="muted pad">What your assistant always knows about you. Write in your own words. It also adds to these as it learns.</p>
+        <div id="profile-fields" class="pad"></div>
+        <div class="pad pane-actions">
+          <button type="button" id="interview-btn" class="primary small">Let it interview me</button>
+        </div>
+      </div>
+
+      <div id="brain-missions" class="brain-pane" hidden>
+        <p class="muted pad">Standing instructions your assistant carries out by itself, on a schedule. It only notifies you when there's something worth telling you.</p>
+        <ul id="mission-list" class="list"></ul>
+        <details id="mission-new" class="card">
+          <summary>＋ New instruction</summary>
+          <form id="mission-form" class="stack">
+            <input id="mission-name" placeholder="Name, e.g. Friday wrap-up" maxlength="80" required>
+            <textarea id="mission-text" rows="3" placeholder="What should it do? e.g. Summarize what I got done this week, what's overdue, and my top 3 priorities for next week." maxlength="2000" required></textarea>
+            <div class="field-row two">
+              <select id="mission-schedule" aria-label="How often"></select>
+              <input id="mission-time" type="time" value="08:00" aria-label="Time">
+            </div>
+            <button type="submit" class="primary small">Save instruction</button>
+          </form>
+          <p class="muted small-text">Tip: you can also just say it in chat, like "Every Monday at 8, plan my week."</p>
+        </details>
+      </div>
+
+      <div id="brain-memories" class="brain-pane" hidden>
+        <div class="card">
+          <label class="switch-row"><span>Learn from our chats every night</span><input id="learn-toggle" type="checkbox"></label>
+          <label class="switch-row"><span>Look things up on the web</span><input id="web-toggle" type="checkbox"></label>
+          <div class="field-row two">
+            <label for="model-select">Thinks with</label>
+            <select id="model-select">
+              <option value="opus">Claude Opus (deepest, recommended)</option>
+              <option value="sonnet">Claude Sonnet (faster, half the cost)</option>
+            </select>
+          </div>
+          <p id="learn-last" class="muted small-text"></p>
+          <button type="button" id="learn-now" class="secondary small">Learn from recent chats now</button>
+        </div>
+        <form id="memory-form" class="add-row">
+          <input id="memory-fact" placeholder="Add something to remember" maxlength="500" required>
+          <select id="memory-cat" aria-label="Category"></select>
+          <button type="submit" class="primary small">Save</button>
+        </form>
+        <div class="pad"><input id="memory-filter" type="search" placeholder="Search memories" aria-label="Search memories"></div>
+        <ul id="memory-list" class="list"></ul>
+      </div>
     </section>
 
     <!-- More / settings -->
@@ -272,7 +326,7 @@
       <button data-view="home" class="active"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/><path d="M12 3.5V6M20.5 12H18M12 20.5V18M3.5 12H6"/></svg>Home</button>
       <button data-view="chat"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z"/></svg>Chat</button>
       <button data-view="tasks"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l2 2 3.5-3.5M4 15l2 2 3.5-3.5M12.5 7.5H20M12.5 15.5H20"/></svg>To-dos</button>
-      <button data-view="memory"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>Memory</button>
+      <button data-view="memory"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>Brain</button>
       <button data-view="more"><svg class="tab-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>More</button>
     </nav>
   </main>
