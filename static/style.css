@@ -195,3 +195,254 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .link-btn { background: none; border: 0; color: var(--danger); font-size: 13px; padding: 0; }
 details summary { cursor: pointer; padding: 6px 0; }
 .amount { background: none; border: 0; padding: 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* =====================================================================
+   Orb (both themes) — the assistant's "presence".
+   Idle: slow breathing. Thinking: rings spin fast. Listening: pulse.
+   ===================================================================== */
+:root { --orb: 47, 107, 90; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.orb { position: relative; display: inline-block; width: var(--s, 28px); height: var(--s, 28px); flex: none; }
+.orb-sm { --s: 28px; }
+.orb-lg { --s: 132px; }
+.orb .ring { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid rgba(var(--orb), .28); }
+.orb .r1 { border-top-color: rgba(var(--orb), .95); border-right-color: transparent; animation: orb-spin 10s linear infinite; }
+.orb .r2 { inset: 16%; border-style: dashed; border-color: rgba(var(--orb), .45); animation: orb-spin 16s linear infinite reverse; }
+.orb .r3 {
+  inset: 5%; border: 0;
+  background: repeating-conic-gradient(rgba(var(--orb), .55) 0 1.5deg, transparent 1.5deg 12deg);
+  -webkit-mask: radial-gradient(circle, transparent 60%, #000 61%, #000 67%, transparent 68%);
+          mask: radial-gradient(circle, transparent 60%, #000 61%, #000 67%, transparent 68%);
+  animation: orb-spin 40s linear infinite;
+}
+.orb .core {
+  position: absolute; inset: 31%; border-radius: 50%;
+  background: radial-gradient(circle at 42% 38%, #ffffff 0, rgba(var(--orb), 1) 42%, rgba(var(--orb), .15) 75%);
+  box-shadow: 0 0 calc(var(--s) * .22) rgba(var(--orb), .55);
+  animation: orb-breathe 4.5s ease-in-out infinite;
+}
+html[data-state="thinking"] .orb .r1 { animation-duration: .8s; }
+html[data-state="thinking"] .orb .r2 { animation-duration: 1.6s; }
+html[data-state="thinking"] .orb .core { animation-duration: 1.1s; }
+html[data-state="listening"] .orb .core { animation: orb-listen .9s ease-in-out infinite; }
+html[data-state="speaking"] .orb .core { animation: orb-speak .42s ease-in-out infinite alternate; }
+html[data-state="speaking"] .orb .r2 { animation-duration: 4s; }
+html[data-state="speaking"] .orb .r1 { animation-duration: 3s; }
+html[data-state="speaking"] .orb { cursor: pointer; }
+.orb .r1 { transition: box-shadow .25s ease-out; }
+.orb.beat .r1 { animation-name: orb-spin, orb-beat; animation-duration: 3s, .35s; animation-timing-function: linear, ease-out; animation-iteration-count: infinite, 1; }
+@keyframes orb-speak { from { transform: scale(.94); box-shadow: 0 0 calc(var(--s) * .18) rgba(var(--orb), .5); }
+                       to   { transform: scale(1.14); box-shadow: 0 0 calc(var(--s) * .5) rgba(var(--orb), .85); } }
+@keyframes orb-beat { 0% { box-shadow: 0 0 0 0 rgba(var(--orb), .7), inset 0 0 calc(var(--s) * .15) rgba(var(--orb), .5); }
+                      100% { box-shadow: 0 0 0 calc(var(--s) * .12) rgba(var(--orb), 0), inset 0 0 0 rgba(var(--orb), 0); } }
+@keyframes orb-spin { to { transform: rotate(360deg); } }
+@keyframes orb-breathe { 0%, 100% { transform: scale(.92); opacity: .85; } 50% { transform: scale(1.04); opacity: 1; } }
+@keyframes orb-listen { 0%, 100% { transform: scale(.95); box-shadow: 0 0 calc(var(--s) * .2) rgba(var(--orb), .5); }
+                        50% { transform: scale(1.15); box-shadow: 0 0 calc(var(--s) * .6) rgba(var(--orb), .8); } }
+
+/* Home readout at the top of chat */
+.hero { text-align: center; padding: 18px 8px 22px; }
+.hero .orb { margin-bottom: 14px; }
+.hero .greet { font-size: 24px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.hero .date { color: var(--muted); margin: 2px 0 18px; font-size: 14px; }
+.readouts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: left; }
+.ro { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--text); font: inherit; }
+.ro b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; line-height: 1.2; overflow-wrap: anywhere; }
+.ro span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.ro.warn b { color: var(--danger); }
+.field-row.two { grid-template-columns: 1fr auto; }
+#voice-select { max-width: 190px; }
+#voice-test { margin: 4px 0 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .orb .ring, .orb .core { animation: none !important; }
+}
+
+/* =====================================================================
+   Jarvis theme: deep navy glass, cyan instrument light, amber for alerts.
+   Corner brackets (not rounded cards) are the structural motif.
+   ===================================================================== */
+@font-face { font-family: "Chakra Petch"; font-weight: 500; font-display: swap; src: url("/static/chakra-petch-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Chakra Petch"; font-weight: 600; font-display: swap; src: url("/static/chakra-petch-latin-600-normal.woff2") format("woff2"); }
+
+html[data-theme="hud"] {
+  --bg: #060c18;
+  --surface: rgba(14, 30, 52, .62);
+  --surface-2: rgba(95, 227, 255, .08);
+  --text: #d9ebf5;
+  --muted: #7f97ad;
+  --line: rgba(95, 227, 255, .16);
+  --accent: #5fe3ff;
+  --accent-text: #03111b;
+  --user-bubble: rgba(95, 227, 255, .10);
+  --user-text: #e9f9ff;
+  --danger: #ffb547;
+  --orb: 95, 227, 255;
+  --bracket: rgba(95, 227, 255, .75);
+  --display: "Chakra Petch", -apple-system, system-ui, sans-serif;
+  color-scheme: dark;
+}
+html[data-theme="hud"] body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse 120% 55% at 50% -12%, rgba(95, 227, 255, .16), transparent 62%),
+    linear-gradient(rgba(95, 227, 255, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(95, 227, 255, .035) 1px, transparent 1px);
+  background-size: 100% 100%, 28px 28px, 28px 28px;
+  background-attachment: fixed;
+}
+html[data-theme="hud"] h1, html[data-theme="hud"] h2,
+html[data-theme="hud"] .hero .greet, html[data-theme="hud"] .ro b,
+html[data-theme="hud"] .big-number, html[data-theme="hud"] .tabbar button,
+html[data-theme="hud"] .segmented button, html[data-theme="hud"] .primary {
+  font-family: var(--display);
+}
+html[data-theme="hud"] .topbar,
+html[data-theme="hud"] .tabbar,
+html[data-theme="hud"] .composer {
+  background: rgba(6, 12, 24, .72);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+html[data-theme="hud"] .topbar h1 { font-weight: 600; letter-spacing: .02em; }
+html[data-theme="hud"] .tabbar button.active { color: var(--accent); text-shadow: 0 0 12px rgba(95, 227, 255, .55); }
+html[data-theme="hud"] .tabbar button.active .tab-ico { filter: drop-shadow(0 0 6px rgba(95, 227, 255, .6)); }
+
+/* corner-bracket frame */
+html[data-theme="hud"] .card,
+html[data-theme="hud"] .item,
+html[data-theme="hud"] .ro {
+  border-radius: 3px;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket)),
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket)),
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket)),
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket));
+  background-repeat: no-repeat;
+  background-size: 12px 1.5px, 1.5px 12px, 12px 1.5px, 1.5px 12px, 12px 1.5px, 1.5px 12px, 12px 1.5px, 1.5px 12px;
+  background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+html[data-theme="hud"] .ro.warn { --bracket: rgba(255, 181, 71, .8); }
+html[data-theme="hud"] .ro b { color: var(--accent); font-weight: 600; text-shadow: 0 0 14px rgba(95, 227, 255, .35); }
+html[data-theme="hud"] .ro.warn b { color: var(--danger); text-shadow: 0 0 14px rgba(255, 181, 71, .35); }
+html[data-theme="hud"] .hero .greet { font-size: 26px; font-weight: 600; letter-spacing: .01em; }
+
+/* chat: the assistant speaks as a transcript line, you speak in a panel */
+html[data-theme="hud"] .msg.assistant {
+  background: none; border: 0; border-left: 2px solid rgba(95, 227, 255, .55);
+  border-radius: 0; padding: 2px 0 2px 12px; max-width: 92%;
+}
+html[data-theme="hud"] .msg.assistant strong { color: #ffffff; }
+html[data-theme="hud"] .msg.user { border: 1px solid var(--line); border-radius: 14px 14px 3px 14px; }
+html[data-theme="hud"] .msg.typing { border-left-color: transparent; }
+html[data-theme="hud"] .typing span { background: var(--accent); }
+html[data-theme="hud"] .composer textarea {
+  background: rgba(14, 30, 52, .7); border-color: var(--line);
+}
+html[data-theme="hud"] .composer textarea:focus { border-color: rgba(95, 227, 255, .6); box-shadow: 0 0 0 3px rgba(95, 227, 255, .12); }
+html[data-theme="hud"] .round.send { box-shadow: 0 0 18px rgba(95, 227, 255, .45); }
+html[data-theme="hud"] .round.ghost { background: rgba(95, 227, 255, .08); border: 1px solid var(--line); }
+html[data-theme="hud"] #mic-btn.listening { background: var(--danger); color: #1a0f00; border-color: transparent; }
+
+/* lists, controls */
+html[data-theme="hud"] .check { border-color: rgba(95, 227, 255, .5); }
+html[data-theme="hud"] .check.on { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px rgba(95, 227, 255, .5); }
+html[data-theme="hud"] .segmented { background: rgba(14, 30, 52, .7); border: 1px solid var(--line); border-radius: 6px; }
+html[data-theme="hud"] .segmented button { border-radius: 4px; }
+html[data-theme="hud"] .segmented button.active { background: rgba(95, 227, 255, .14); color: var(--accent); box-shadow: inset 0 0 0 1px rgba(95, 227, 255, .35); }
+html[data-theme="hud"] input, html[data-theme="hud"] select, html[data-theme="hud"] textarea { background: rgba(14, 30, 52, .7); border: 1px solid var(--line); }
+html[data-theme="hud"] .primary { border-radius: 6px; letter-spacing: .02em; box-shadow: 0 0 16px rgba(95, 227, 255, .3); }
+html[data-theme="hud"] .secondary { border-radius: 6px; background: rgba(95, 227, 255, .08); border: 1px solid var(--line); }
+html[data-theme="hud"] .menu { background: #0b1628; border-color: var(--line); border-radius: 6px; }
+html[data-theme="hud"] .big-number { color: var(--accent); text-shadow: 0 0 18px rgba(95, 227, 255, .35); }
+html[data-theme="hud"] .toast { background: #0b1628; color: var(--text); border: 1px solid rgba(95, 227, 255, .4); box-shadow: 0 0 20px rgba(95, 227, 255, .2); }
+html[data-theme="hud"] .login-icon { box-shadow: 0 0 30px rgba(95, 227, 255, .35); }
+html[data-theme="hud"] :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* =====================================================================
+   Home: the instrument dial
+   ===================================================================== */
+.tab-ico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.round svg, .talk svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.home { padding: 10px 16px 24px; }
+.status-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.status {
+  display: inline-flex; align-items: center; gap: 7px; background: none; border: 1px solid var(--line);
+  border-radius: 999px; padding: 6px 12px; font-size: 13px; color: var(--muted);
+}
+.status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .6; }
+.status.on { color: var(--text); }
+.status.on .dot { background: var(--accent); opacity: 1; box-shadow: 0 0 8px var(--accent); }
+
+.dial { --s: min(76vw, 330px); display: block; margin: 8px auto 18px; }
+.dial .r1 { border-width: 2px; }
+.dial .core {
+  inset: 22%;
+  background: radial-gradient(circle, rgba(var(--orb), .20) 0, rgba(var(--orb), .05) 58%, transparent 72%);
+  box-shadow: none;
+}
+html[data-state="speaking"] .dial .core { animation-name: dial-speak; }
+@keyframes dial-speak { from { transform: scale(.9); opacity: .6; } to { transform: scale(1.18); opacity: 1; } }
+.dial-svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.dial-svg #ticks line { stroke: rgba(var(--orb), .35); stroke-width: 1; }
+.dial-svg #ticks line.major { stroke: rgba(var(--orb), .8); stroke-width: 2; }
+.arc-track, .arc, .sec-track, .sec { fill: none; }
+.arc-track { stroke: rgba(var(--orb), .10); stroke-width: 6; }
+.arc { stroke: var(--danger); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 0 100; transition: stroke-dasharray .8s ease; }
+.arc.calm { stroke: var(--accent); }
+.sec-track { stroke: rgba(var(--orb), .06); stroke-width: 2; }
+.sec { stroke: rgba(var(--orb), .9); stroke-width: 2; stroke-dasharray: 0 60; }
+.dial-center {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; pointer-events: none; padding: 0 18%;
+}
+.time { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+#clock-hm { font-size: calc(var(--s) * .2); font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+.ampm { display: flex; flex-direction: column; align-items: flex-start; font-size: calc(var(--s) * .05); line-height: 1.15; color: var(--muted); }
+#clock-ap { color: var(--text); font-weight: 600; }
+.next { margin-top: calc(var(--s) * .05); display: flex; flex-direction: column; gap: 1px; max-width: 100%; }
+.next-label { font-size: 12px; color: var(--muted); }
+.next-text { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.next-cd { font-size: 13px; color: var(--danger); font-variant-numeric: tabular-nums; }
+.next-cd.calm { color: var(--accent); }
+
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.tile {
+  text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; color: var(--text); font: inherit; display: flex; flex-direction: column; gap: 1px; min-width: 0;
+}
+.tile-head { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile b { font-size: 40px; line-height: 1.05; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile span { font-size: 14px; }
+.tile .tile-foot { font-size: 12px; color: var(--muted); }
+.home .readouts { grid-template-columns: 1fr 1fr; margin-bottom: 16px; }
+.home-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.home-actions .secondary { padding: 14px; }
+.talk {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 12px;
+  padding: 14px; background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 16px;
+}
+.add-row.flush { padding: 10px 0 0; }
+
+/* Jarvis theme touches for Home */
+html[data-theme="hud"] #clock-hm, html[data-theme="hud"] .tile b, html[data-theme="hud"] .next-text,
+html[data-theme="hud"] .talk, html[data-theme="hud"] .tile-head { font-family: var(--display); }
+html[data-theme="hud"] #clock-hm { color: #eefbff; text-shadow: 0 0 22px rgba(95, 227, 255, .45); }
+html[data-theme="hud"] .arc { filter: drop-shadow(0 0 5px rgba(255, 181, 71, .6)); }
+html[data-theme="hud"] .arc.calm { filter: drop-shadow(0 0 5px rgba(95, 227, 255, .6)); }
+html[data-theme="hud"] .tile {
+  border-radius: 3px;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket)),
+    linear-gradient(var(--bracket), var(--bracket)), linear-gradient(var(--bracket), var(--bracket)),
+    linear-gradient(90deg, rgba(95, 227, 255, .10), transparent 55%);
+  background-repeat: no-repeat;
+  background-size: 14px 1.5px, 1.5px 14px, 14px 1.5px, 1.5px 14px, 100% 100%;
+  background-position: 0 0, 0 0, 100% 100%, 100% 100%, 0 0;
+}
+html[data-theme="hud"] .tile b { color: var(--accent); text-shadow: 0 0 16px rgba(95, 227, 255, .35); }
+html[data-theme="hud"] .status { background: rgba(14, 30, 52, .6); border-radius: 4px; }
+html[data-theme="hud"] .talk { border-radius: 6px; box-shadow: 0 0 22px rgba(95, 227, 255, .4); letter-spacing: .03em; }
+html[data-theme="hud"] .home-actions .secondary { border-radius: 6px; }
