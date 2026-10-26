@@ -5,6 +5,8 @@ Your own private AI assistant, opened from an icon on your iPhone (or by saying 
 **What it can do**
 - **Home screen** with a live clock dial, a countdown to your next reminder, weather, the date, and a Talk button
 - **Chat** in plain language, by typing or talking
+- **Gmail**: summaries, drafts, and sending after you approve
+- **Calendars** (Apple iCloud and Gmail): see your schedule and add or move events
 - **To-do lists** for work and personal life
 - **Memory** of things you tell it about yourself
 - **Reminders** that pop up on your phone at the time you ask
@@ -126,6 +128,62 @@ Now say **"Hey Siri, Jarvis"**, wait for the listening sound, and talk. For exam
 
 ---
 
+## Connect Apple Calendar (iCloud) (about 3 min)
+
+Your iPhone saves new events to iCloud, so this is the calendar Jarvis adds to by default.
+
+1. On your Mac, go to **account.apple.com** and sign in with your Apple ID.
+2. Open **Sign-In and Security** → **App-Specific Passwords** → **＋** (or "Generate an app-specific password").
+3. Name it `Jarvis` and click **Create**. Copy the password it shows (it looks like `abcd-efgh-ijkl-mnop`). You won't be able to see it again.
+4. In Jarvis → **More → Apple Calendar (iCloud)**, enter your **Apple ID email** and paste that password → **Connect iCloud Calendar**.
+5. Under **New events go to**, pick the calendar you normally use.
+
+This app-specific password only works for things like calendars. It can't sign in to your Apple account or change your password. You can revoke it anytime in the same place.
+
+---
+
+## Connect your Gmail accounts (about 25 min, once)
+
+These are the same Gmail accounts and calendars you see in Apple Mail and Apple Calendar, so anything Jarvis adds shows up there too. This lets Jarvis read and summarize your email, write drafts, send email **only after you approve it**, and see and add to your calendar. You're creating your own private Google "app" that only you use. Google calls this an "unverified app", which is normal for something personal like this.
+
+Do this on your Mac in Chrome. You only create the Google setup once (steps A–D), using either of your Gmail accounts, and then connect both accounts in step E.
+
+**A. Create the project**
+1. Go to **console.cloud.google.com**. Accept the terms if asked.
+2. Click the project picker at the top left → **New project**. Name it `Jarvis` → **Create**. Make sure `Jarvis` is selected at the top.
+
+**B. Turn on Gmail and Calendar**
+3. In the search bar at the top, type **Gmail API**, open it and click **Enable**.
+4. Search **Google Calendar API**, open it and click **Enable**.
+
+**C. Set up the sign-in screen**
+5. Search **Google Auth Platform** and open it → **Get started**.
+   - App name: `Jarvis`. Support email: your Gmail. → **Next**
+   - Audience: **External** → **Next**
+   - Contact email: your Gmail → **Next** → tick the agreement → **Create**
+6. Go to **Audience** in the left menu → under Publishing status click **Publish app** → **Confirm**. It should say **In production**. Skip this and Google disconnects Jarvis every 7 days.
+
+**D. Create the key Jarvis uses**
+7. Go to **Clients** in the left menu → **Create client**.
+   - Application type: **Web application**. Name: `Jarvis`.
+   - Under **Authorized redirect URIs** click **Add URI** and paste the address shown in Jarvis → **More → Gmail & Google Calendar → Setup details**. It looks like `https://assistant.xxxx.ts.net/api/google/callback`.
+   - Click **Create**.
+8. A box shows your **Client ID** and **Client secret**. Keep it open, or download the JSON.
+
+**E. Connect**
+9. In Jarvis → **More → Gmail & Google Calendar → Setup details**, paste the **Client ID** and **Client secret** → **Save**.
+10. Tap **＋ Add Gmail account** and choose your first Gmail account.
+11. Google shows **"Google hasn't verified this app."** That's your own app, so tap **Advanced** → **Go to Jarvis (unsafe)**.
+12. On the permissions screen, **tick every box** → **Continue**. You'll see **Google connected**. Tap **Back to Jarvis**.
+13. Tap **＋ Add Gmail account** again and repeat steps 10–12 with your second Gmail account. (You can add more later the same way.)
+14. Optional: pick an account in the dropdown and tap **Make default** for the account you want new events and emails to use unless you say otherwise.
+
+**Try it:** "What important emails did I get today?", "What's on my calendar tomorrow?", "Add dentist Friday at 3pm", "Draft a reply to June saying I'll have it by Thursday."
+
+**How sending works:** Jarvis always writes a draft first and shows you the whole email. It can only send after you reply "send it", and the server enforces that. Jarvis never sends calendar invites to other people. You can disconnect anytime in **More**, or at **myaccount.google.com/permissions**.
+
+---
+
 ## Things to try
 
 - "Remind me tomorrow at 9 to send the report."
@@ -160,6 +218,5 @@ Backups of your data are saved every day on the server (last 14 days kept) in `/
 
 ## Coming next
 
-- Gmail and Google Calendar (so the morning brief includes your meetings and important email)
 - Apple (iCloud) Calendar
 - Bank CSV import and budgets

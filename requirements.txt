@@ -3,3 +3,6 @@ uvicorn>=0.30
 anthropic>=0.40
 pywebpush>=2.0
 cryptography>=42
+caldav==3.6.0
+icalendar>=6
+recurring-ical-events>=3
