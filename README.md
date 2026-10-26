@@ -8,7 +8,9 @@ Your own private AI assistant, opened from an icon on your iPhone (or by saying 
 - **Gmail**: summaries, drafts, and sending after you approve
 - **Calendars** (Apple iCloud and Gmail): see your schedule and add or move events
 - **To-do lists** for work and personal life
-- **Memory** of things you tell it about yourself
+- **A brain**: knows who you are, your work, goals and preferences, and keeps long-term memory that grows on its own
+- **Standing instructions**: things it does by itself on a schedule, plus a watch that flags what needs you
+- **Web search** for current information
 - **Reminders** that pop up on your phone at the time you ask
 - **Morning brief** on weekdays and a **weekly review**, sent as notifications
 - **Photos and PDFs**: read them, summarize them, and log receipts as expenses
@@ -181,6 +183,27 @@ Do this on your Mac in Chrome. You only create the Google setup once (steps A–
 **Try it:** "What important emails did I get today?", "What's on my calendar tomorrow?", "Add dentist Friday at 3pm", "Draft a reply to June saying I'll have it by Thursday."
 
 **How sending works:** Jarvis always writes a draft first and shows you the whole email. It can only send after you reply "send it", and the server enforces that. Jarvis never sends calendar invites to other people. You can disconnect anytime in **More**, or at **myaccount.google.com/permissions**.
+
+---
+
+## Its brain (the Brain tab)
+
+**About you:** five short sections your assistant always knows: who you are, your work, your goals, how you like things done, and the people in your life. Write them yourself, or tap **Let it interview me** and answer its questions in chat. It also adds to them as it learns.
+
+**On its own:** standing instructions it carries out by itself on a schedule, without you asking. Examples:
+- "Every weekday at 7:15, give me 3 HR and payroll compliance headlines for California."
+- "Every Friday at 4, summarize what I got done this week and my top 3 priorities for next week."
+- "Every Sunday at 7pm, look at my week ahead and add prep to-dos for anything important."
+
+It messages you (in Chat, plus a notification) only when there's something worth telling you. One instruction is set up for you: **Keep an eye on things**, which runs every 3 hours from 7am–9pm and flags meetings to prep for, overdue items and emails needing a reply. Pause or delete it anytime.
+
+When it runs on its own, it **can't** send email, delete anything, change settings or move your events. It can read, look things up, add to-dos and reminders, add events to your own calendar, and write drafts for you to approve.
+
+**Memories:** individual facts it has saved, sorted into categories (goal, work, person, preference…). It saves things on its own when you mention them, and every night at 11:30 it reviews the day's chats and saves what matters. You can see, search and delete everything here, and turn learning off.
+
+**Web search:** it can look things up online for current info (news, hours, prices). Each search costs about 1¢ on your Anthropic account. Turn it off under **Brain → Memories** if you like.
+
+**Cost:** standing instructions and nightly learning each use Claude like a short chat. With the default setup, expect roughly a few dollars a month extra. Your Anthropic spend limit still applies.
 
 ---
 

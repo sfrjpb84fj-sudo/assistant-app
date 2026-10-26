@@ -68,7 +68,6 @@ if [ ! -f "$ENV_FILE" ]; then
   cat > "$ENV_FILE" <<EOF
 ANTHROPIC_API_KEY='$API_KEY'
 APP_PASSCODE='$PASS1'
-MODEL=claude-sonnet-5-5
 USER_NAME='$DISPLAY_NAME'
 ASSISTANT_NAME='$BOT_NAME'
 TIMEZONE=America/Los_Angeles
