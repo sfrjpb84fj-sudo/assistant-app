@@ -446,3 +446,17 @@ html[data-theme="hud"] .tile b { color: var(--accent); text-shadow: 0 0 16px rgb
 html[data-theme="hud"] .status { background: rgba(14, 30, 52, .6); border-radius: 4px; }
 html[data-theme="hud"] .talk { border-radius: 6px; box-shadow: 0 0 22px rgba(95, 227, 255, .4); letter-spacing: .03em; }
 html[data-theme="hud"] .home-actions .secondary { border-radius: 6px; }
+
+/* Google card + 3-up readouts */
+.stack { display: grid; gap: 8px; margin: 8px 0 4px; }
+.stack .secondary { justify-self: start; }
+#google-card .row-btns { margin-top: 10px; }
+.home .readouts.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.home .readouts.three .ro { padding: 10px; min-width: 0; }
+.home .readouts.three .ro b { font-size: 18px; white-space: nowrap; }
+.home .readouts.three .ro span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.primary { display: inline-block; text-decoration: none; }
+#g-details { margin-top: 10px; }
+#ic-default { max-width: 62vw; }
+.account-picker { display: grid; gap: 8px; margin: 4px 0 12px; }
+#g-select { width: 100%; max-width: none; }

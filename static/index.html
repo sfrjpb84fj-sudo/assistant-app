@@ -146,6 +146,49 @@
         </div>
       </div>
 
+      <div class="card" id="icloud-card">
+        <h2>Apple Calendar (iCloud)</h2>
+        <p id="ic-status" class="muted"></p>
+        <form id="ic-form" class="stack">
+          <input id="ic-user" type="email" placeholder="Apple ID email" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <input id="ic-pass" type="password" placeholder="App-specific password (xxxx-xxxx-xxxx-xxxx)" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button type="submit" class="primary small">Connect iCloud Calendar</button>
+        </form>
+        <div id="ic-connected" hidden>
+          <div class="field-row two">
+            <label for="ic-default">New events go to</label>
+            <select id="ic-default"></select>
+          </div>
+          <p id="ic-cals" class="muted small-text"></p>
+          <button type="button" id="ic-disconnect" class="secondary small">Disconnect iCloud</button>
+        </div>
+      </div>
+
+      <div class="card" id="google-card">
+        <h2>Gmail accounts</h2>
+        <p id="g-status" class="muted"></p>
+        <div id="g-picker" class="account-picker" hidden>
+          <select id="g-select" aria-label="Connected Gmail accounts"></select>
+          <div class="row-btns">
+            <button type="button" id="g-make-default" class="secondary small">Make default</button>
+            <button type="button" id="g-remove" class="secondary small">Disconnect</button>
+          </div>
+        </div>
+        <div class="row-btns">
+          <button type="button" id="g-connect" class="primary small">＋ Add Gmail account</button>
+        </div>
+        <details id="g-details">
+          <summary class="muted small-text">Setup details</summary>
+          <p class="muted small-text">Follow "Connect Google" in the setup guide. When Google asks for an authorized redirect URI, paste this:</p>
+          <div class="key-row"><code id="g-redirect"></code><button type="button" id="g-copy" class="secondary small">Copy</button></div>
+          <form id="g-form" class="stack">
+            <input id="g-client-id" placeholder="Client ID (ends in .apps.googleusercontent.com)" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <input id="g-client-secret" placeholder="Client secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button type="submit" class="secondary small">Save</button>
+          </form>
+        </details>
+      </div>
+
       <div class="card">
         <h2>Voice</h2>
         <label class="switch-row">

@@ -522,6 +522,8 @@ async function loadMore() {
   $("#speak-toggle").checked = store.get("speak") === "1";
   $("#theme-select").value = document.documentElement.dataset.theme;
   $("#city-input").value = s.weather_city || "";
+  loadGoogle();
+  loadICloud();
   fillVoices();
   shortcutKey = s.shortcut_token;
   $("#shortcut-key").textContent = "••••••••••••";
@@ -726,12 +728,13 @@ async function loadHome() {
   startClock();
 
   const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
-  const [rems, tasks, spend, wx, settings] = await Promise.all([
+  const [rems, tasks, spend, wx, settings, agenda] = await Promise.all([
     api("/api/reminders").catch(() => []),
     api("/api/tasks?include_done=false").catch(() => []),
     api(`/api/expenses?start=${start}`).catch(() => ({ total: 0 })),
     api("/api/weather").catch(() => ({ set: false })),
     api("/api/settings").catch(() => ({})),
+    api("/api/agenda").catch(() => ({ connected: false })),
   ]);
   homeData.next = rems[0] || null;
   $("#next-label").textContent = homeData.next ? "Next reminder" : "No reminders set";
@@ -757,8 +760,15 @@ async function loadHome() {
     overdue
       ? readout(String(overdue), overdue === 1 ? "overdue to-do" : "overdue to-dos", () => switchView("tasks"), true)
       : readout(String(tasks.length), tasks.length === 1 ? "open to-do" : "open to-dos", () => switchView("tasks")),
-    readout("$" + Math.round(spend.total).toLocaleString(), `spent in ${now.toLocaleDateString(undefined, { month: "long" })}`, () => switchView("more")),
+    readout("$" + Math.round(spend.total).toLocaleString(), `spent in ${now.toLocaleDateString(undefined, { month: "short" })}`, () => switchView("more")),
   );
+  if (agenda.connected) {
+    const nx = agenda.next;
+    row.prepend(nx
+      ? readout(parseLocal(nx.start).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }), nx.title, () => { switchView("chat"); })
+      : readout(String(agenda.events.length), agenda.events.length ? "events today, all done" : "no events today", () => switchView("chat")));
+  }
+  row.classList.toggle("three", row.children.length === 3);
   updateStatus(settings.push_devices);
 }
 
@@ -795,6 +805,118 @@ $("#city-form").addEventListener("submit", async (e) => {
     await api("/api/settings", { method: "POST", body: { weather_city: $("#city-input").value.trim() } });
     toast($("#city-input").value.trim() ? "Weather city saved" : "Weather turned off");
   } catch (err) { toast(err.message); }
+});
+
+// ---------------------------------------------------------- Google (Gmail + Calendar)
+let googleState = { accounts: [], default: "" };
+async function loadGoogle() {
+  const g = await api("/api/google/status").catch(() => null);
+  if (!g) return;
+  googleState = g;
+  $("#g-redirect").textContent = location.origin + "/api/google/callback";
+  if (g.client_id) $("#g-client-id").value = g.client_id;
+  $("#g-details").open = !g.configured;
+  $("#g-connect").hidden = !g.configured;
+  const n = g.accounts.length;
+  $("#g-status").textContent = n
+    ? `${n} account${n > 1 ? "s" : ""} connected. Jarvis can read, draft and (with your OK) send email, and use their calendars.`
+    : g.configured ? "Ready. Tap Add Gmail account and allow access on Google's screen."
+    : "Not set up yet. Open Setup details below.";
+  $("#g-picker").hidden = !n;
+  const sel = $("#g-select"), keep = sel.value;
+  sel.innerHTML = "";
+  for (const email of g.accounts) {
+    const o = document.createElement("option");
+    o.value = email;
+    o.textContent = email + (email === g.default && n > 1 ? "  (default)" : "");
+    sel.appendChild(o);
+  }
+  sel.value = g.accounts.includes(keep) ? keep : g.default || g.accounts[0] || "";
+  updateGoogleButtons();
+}
+function updateGoogleButtons() {
+  const v = $("#g-select").value;
+  $("#g-make-default").hidden = googleState.accounts.length < 2 || v === googleState.default;
+}
+$("#g-select").addEventListener("change", updateGoogleButtons);
+$("#g-make-default").addEventListener("click", async () => {
+  const email = $("#g-select").value;
+  await api("/api/google/default", { method: "POST", body: { email } });
+  toast("New emails will come from " + email);
+  loadGoogle();
+});
+$("#g-remove").addEventListener("click", async () => {
+  const email = $("#g-select").value;
+  if (!email || !confirm(`Disconnect ${email}? Jarvis will stop seeing its email and calendar.`)) return;
+  await api("/api/google/disconnect", { method: "POST", body: { email } });
+  toast("Disconnected " + email);
+  loadGoogle(); loadICloud();
+});
+$("#g-copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("#g-redirect").textContent); toast("Copied"); }
+  catch { toast("Couldn't copy. Select the address and copy it by hand."); }
+});
+$("#g-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/google/credentials", { method: "POST", body: {
+      client_id: $("#g-client-id").value, client_secret: $("#g-client-secret").value, origin: location.origin } });
+    $("#g-client-secret").value = "";
+    toast("Saved. Now tap Add Gmail account.");
+    loadGoogle();
+  } catch (err) { toast(err.message); }
+});
+$("#g-connect").addEventListener("click", async () => {
+  try { const { url } = await api("/api/google/start", { method: "POST" }); location.href = url; }
+  catch (err) { toast(err.message); }
+});
+
+// ---------------------------------------------------------- Apple iCloud Calendar
+async function loadICloud() {
+  const [ic, g] = await Promise.all([
+    api("/api/icloud/status").catch(() => ({ connected: false })),
+    api("/api/google/status").catch(() => ({ accounts: [] })),
+  ]);
+  $("#ic-form").hidden = ic.connected;
+  $("#ic-connected").hidden = !ic.connected;
+  if (!ic.connected) {
+    $("#ic-status").textContent = "Connect with your Apple ID and an app-specific password. The setup guide shows how to make one.";
+    return;
+  }
+  $("#ic-status").textContent = ic.ok ? `Connected as ${ic.apple_id}.` : `Connected as ${ic.apple_id}, but iCloud didn't answer just now.`;
+  $("#ic-cals").textContent = ic.calendars.length ? "iCloud calendars: " + ic.calendars.join(", ") : "";
+  const sel = $("#ic-default"); sel.innerHTML = "";
+  for (const name of ic.calendars) {
+    const o = document.createElement("option"); o.value = "iCloud|" + name; o.textContent = `iCloud: ${name}`; sel.appendChild(o);
+  }
+  for (const email of g.accounts || []) {
+    const o = document.createElement("option"); o.value = email; o.textContent = email; sel.appendChild(o);
+  }
+  sel.value = ic.current_target === "iCloud" || !ic.current_target ? "iCloud|" + ic.default_calendar : ic.current_target;
+  if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+}
+$("#ic-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.submitter || $("#ic-form button");
+  btn.disabled = true; btn.textContent = "Connecting…";
+  try {
+    await api("/api/icloud/connect", { method: "POST", body: { apple_id: $("#ic-user").value, password: $("#ic-pass").value } });
+    $("#ic-pass").value = "";
+    toast("iCloud Calendar connected");
+    loadICloud();
+  } catch (err) { toast(err.message); }
+  finally { btn.disabled = false; btn.textContent = "Connect iCloud Calendar"; }
+});
+$("#ic-default").addEventListener("change", async (e) => {
+  const v = e.target.value;
+  const body = v.startsWith("iCloud|") ? { target: "iCloud", icloud_calendar: v.slice(7) } : { target: v };
+  try { await api("/api/calendar/default", { method: "POST", body }); toast("New events will go to " + (body.icloud_calendar ? "iCloud: " + body.icloud_calendar : v)); }
+  catch (err) { toast(err.message); }
+});
+$("#ic-disconnect").addEventListener("click", async () => {
+  if (!confirm("Disconnect iCloud Calendar? Jarvis will stop seeing it.")) return;
+  await api("/api/icloud/disconnect", { method: "POST" });
+  toast("iCloud disconnected"); loadICloud();
 });
 
 // Tap the orb to stop Jarvis talking.
