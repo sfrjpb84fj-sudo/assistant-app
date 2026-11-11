@@ -66,6 +66,7 @@
         <p class="cap-you" id="cap-you"></p>
         <p class="cap-ai" id="cap-ai"></p>
         <button type="button" class="cap-more" id="cap-more" hidden>Open in chat</button>
+        <button type="button" class="cap-play" id="cap-play" hidden>▶ Play</button>
       </div>
 
       <div class="gauges">
@@ -230,6 +231,17 @@
             <button type="submit" class="secondary small">Save</button>
           </form>
         </details>
+      </div>
+
+      <div class="card" id="todoist-card">
+        <h2>Todoist</h2>
+        <p id="td-status" class="muted small-text">Not connected. Kairos is using its own lists.</p>
+        <form id="td-form" class="add-row flush">
+          <input id="td-token" type="password" placeholder="Paste your Todoist API token" autocomplete="off" aria-label="Todoist API token">
+          <button type="submit" class="secondary small">Connect</button>
+        </form>
+        <button id="td-disconnect" class="secondary small" hidden>Disconnect</button>
+        <p class="muted small-text">In Todoist: Settings → Integrations → Developer → copy the API token. Your “Work” project becomes the Work list; everything else shows under Personal. Changes go both ways.</p>
       </div>
 
       <div class="card">

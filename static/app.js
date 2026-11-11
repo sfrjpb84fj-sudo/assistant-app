@@ -409,10 +409,13 @@ function startEar(onLevel, onStop) {
         an.getFloatTimeDomainData(buf);
         let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
         const rms = Math.sqrt(sum / buf.length), now = performance.now();
-        if (now - t0 < 350) noise = Math.max(0.004, noise * 0.8 + rms * 0.2);   // learn the room's background noise
-        if (rms > Math.max(0.015, noise * 3)) { heard = true; lastLoud = now; }
+        // keep learning the room's background level (follows quiet moments quickly, loud ones slowly)
+        noise = rms < noise ? noise * 0.85 + rms * 0.15 : noise * 0.995 + rms * 0.005;
+        if (now - t0 < 300) noise = Math.max(noise, rms);
+        noise = Math.max(0.003, noise);
+        if (rms > Math.max(0.012, noise * 2.8)) { heard = true; lastLoud = now; }
         if (onLevel) onLevel(Math.min(1, rms * 10));
-        if ((heard && now - lastLoud > 1400) || (!heard && now - t0 > 8000) || now - t0 > 45000) return resolve();
+        if ((heard && now - lastLoud > 950) || (!heard && now - t0 > 8000) || now - t0 > 25000) return resolve();
         timer = setTimeout(tick, 50);
       };
       tick();
@@ -533,7 +536,12 @@ function speechChunks(text) {
     else if (last && chunks.length === 1 && last.length < 40 && last.length + s.length < limit) chunks[0] = last + " " + s;
     else chunks.push(s);
   }
-  return chunks;
+  // Make the very first piece short so the voice starts sooner: cut a long opening sentence at a comma.
+  if (chunks.length && chunks[0].length > 70) {
+    const first = chunks[0], m = first.slice(18, 80).search(/[,;:—–] /);
+    if (m >= 0) chunks.splice(0, 1, first.slice(0, 18 + m + 1), first.slice(18 + m + 2));
+  }
+  return chunks.filter(Boolean);
 }
 
 // Loudness envelope (60 steps a second) so the sphere can pulse with the voice.
@@ -964,6 +972,7 @@ async function loadMore() {
   loadGoogle();
   loadICloud();
   fillVoices();
+  loadTodoist();
   const vu = $("#voice-usage");
   if (s.voice && s.voice.engine === "elevenlabs") {
     vu.hidden = false;
@@ -1050,6 +1059,34 @@ function fillVoices() {
   sel.value = store.get("voice") || "";
 }
 if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", () => { if (!$("#view-more").hidden) fillVoices(); });
+// ---- Todoist
+async function loadTodoist() {
+  try {
+    const t = await api("/api/todoist");
+    $("#td-form").hidden = t.connected;
+    $("#td-disconnect").hidden = !t.connected;
+    $("#td-status").textContent = t.connected
+      ? (t.work_project ? "Connected. Your to-dos are your Todoist lists." : "Connected. Tip: make a Todoist project called “Work” for the Work list.")
+      : "Not connected. Kairos is using its own lists.";
+  } catch { /* ignore */ }
+}
+$("#td-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const token = $("#td-token").value.trim();
+  if (!token) return;
+  try {
+    const r = await api("/api/todoist", { method: "POST", body: { token } });
+    $("#td-token").value = "";
+    toast(`Todoist connected: ${r.open ?? 0} open to-dos synced`);
+    loadTodoist();
+  } catch (err) { toast(err.message); }
+});
+$("#td-disconnect").addEventListener("click", async () => {
+  if (!confirm("Disconnect Todoist? Your to-dos stay in Todoist; Kairos keeps a copy of the current list.")) return;
+  await api("/api/todoist", { method: "DELETE" });
+  toast("Todoist disconnected"); loadTodoist();
+});
+
 const voiceSample = () => speak(`Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}${userName ? ", " + userName : ""}. All systems are running, which is more than I can say for your to-do list.`);
 $("#voice-select").addEventListener("change", (e) => { store.set("voice", e.target.value); voiceSample(); });
 $("#voice-test").addEventListener("click", voiceSample);
@@ -1432,6 +1469,22 @@ function setGauge(id, value, label, pct, warn = false) {
   g.classList.toggle("warn", warn);
 }
 
+// A brief or review that the Claude side posted through Todoist: show it, play it on tap.
+let pendingBrief = null;
+function showBrief(b) {
+  pendingBrief = b;
+  showCaption(b.title, b.text);
+  $("#cap-you").textContent = b.title.toUpperCase();
+  $("#cap-play").hidden = false;
+}
+$("#cap-play").addEventListener("click", () => {
+  if (!pendingBrief) return;
+  const b = pendingBrief; pendingBrief = null;
+  $("#cap-play").hidden = true;
+  api("/api/brief/seen", { method: "POST" }).catch(() => {});
+  speak(`${b.title}. ${b.text}`);
+});
+
 function greet() {
   const h = new Date().getHours();
   const part = h < 5 ? "evening" : h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
@@ -1444,7 +1497,12 @@ async function loadHome() {
   $("#core-name").textContent = (assistantName || "Kairos").toUpperCase();
   $("#side-right").textContent = now.toLocaleDateString(undefined, { month: "short", day: "2-digit" }).toUpperCase().replace(" ", " · ");
   $("#side-left").textContent = (userName || "YOU").toUpperCase().slice(0, 8) + " · " + pad(now.getHours() < 12 ? 1 : 2);
-  if (!$("#cap-ai").textContent && !(document.documentElement.dataset.state)) greet();
+  if (!document.documentElement.dataset.state) {
+    let brief = null;
+    try { brief = (await api("/api/me")).brief; } catch { /* ignore */ }
+    if (brief) showBrief(brief);
+    else if (!$("#cap-ai").textContent) greet();
+  }
   startCore();
 
   const t0 = performance.now();
