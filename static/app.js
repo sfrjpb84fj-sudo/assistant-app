@@ -102,6 +102,8 @@ async function showApp() {
     const me = await api("/api/me");
     assistantName = me.assistant || "Assistant";
     userName = me.name && me.name !== "the user" && me.name !== "there" ? me.name : "";
+    voiceInfo = me.voice || null;
+    kairosVoice = !!(voiceInfo && voiceInfo.available);
     document.title = assistantName;
   } catch { /* handled by api() */ }
   switchView("home");
@@ -125,7 +127,8 @@ function switchView(name) {
   $$(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   for (const v of Object.keys(titles)) $(`#view-${v}`).hidden = v !== name;
   $("#view-title").textContent = name === "home" ? assistantName : titles[name];
-  if (name === "home") loadHome();
+  $("#app").classList.toggle("on-home", name === "home");
+  if (name === "home") loadHome(); else cancelAnimationFrame(core.raf);
   if (name === "tasks") loadTasks();
   if (name === "memory") loadBrain();
   if (name === "more") loadMore();
@@ -347,7 +350,7 @@ $("#mic-btn").addEventListener("click", () => {
     return;
   }
   if (recog) { recog.stop(); return; }
-  speechSynthesis.cancel();
+  stopSpeaking();
   recog = new Recognition();
   recog.lang = "en-US";
   recog.interimResults = true;
@@ -374,7 +377,143 @@ $("#mic-btn").addEventListener("click", () => {
   try { recog.start(); } catch { recog = null; $("#mic-btn").classList.remove("listening"); toast("Couldn't start the mic."); }
 });
 
-function speak(text) {
+// Speaking. Uses the Kairos voice (ElevenLabs, through our server) when it's set up,
+// otherwise the phone's built-in voice. The sphere follows the real loudness of the audio.
+let kairosVoice = false, voiceInfo = null;
+const voiceAudio = new Audio();
+voiceAudio.setAttribute("playsinline", "");
+let voiceEnv = null, speakSeq = 0;
+const SPOKEN_MAX = 900;          // longer replies: speak the start, the rest stays on screen
+
+// iPhone only lets a page play sound after a tap, so play a tiny silent clip on the first taps.
+let audioUnlocked = false;
+function silentWav() {
+  const n = 800, buf = new ArrayBuffer(44 + n * 2), d = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => d.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); d.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, 8000, true);
+  d.setUint32(28, 16000, true); d.setUint16(32, 2, true); d.setUint16(34, 16, true); str(36, "data"); d.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function unlockAudio() {
+  if (audioUnlocked || !kairosVoice || !voiceAudio.paused) return;
+  voiceAudio.src = silentWav();
+  voiceAudio.play().then(() => { audioUnlocked = true; }).catch(() => {});
+}
+document.addEventListener("pointerdown", unlockAudio, true);
+
+function chosenVoice() { return store.get("voice") || ""; }
+function useKairosVoice() {
+  const v = chosenVoice();
+  return kairosVoice && (v === "" || v.startsWith("k:"));
+}
+
+// Split a reply into pieces: a short first one so the voice starts quickly, then ~250-character pieces.
+function speechChunks(text) {
+  let t = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/https?:\/\/\S+/g, "")
+    .replace(/[*_#`>]+/g, "").replace(/^\s*[-•]\s+/gm, "").replace(/\s+/g, " ").trim();
+  if (t.length > SPOKEN_MAX) {
+    const cut = t.slice(0, SPOKEN_MAX), end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("? "), cut.lastIndexOf("! "));
+    t = (end > SPOKEN_MAX / 2 ? cut.slice(0, end + 1) : cut.replace(/\s+\S*$/, "") + "…") + " The rest is on screen.";
+  }
+  const sentences = t.match(/[^.!?…]+[.!?…]+["”’)]*\s*|[^.!?…]+$/g) || [t];
+  const chunks = [];
+  for (const raw of sentences) {
+    const s = raw.trim(); if (!s) continue;
+    const last = chunks[chunks.length - 1];
+    const limit = chunks.length <= 1 ? 120 : 260;
+    if (last && chunks.length > 1 && last.length + s.length + 1 <= limit) chunks[chunks.length - 1] = last + " " + s;
+    else if (last && chunks.length === 1 && last.length < 40 && last.length + s.length < limit) chunks[0] = last + " " + s;
+    else chunks.push(s);
+  }
+  return chunks;
+}
+
+// Loudness envelope (60 steps a second) so the sphere can pulse with the voice.
+async function envelopeOf(buf) {
+  try {
+    const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!Ctx) return null;
+    const audio = await new Ctx(1, 44100, 44100).decodeAudioData(buf.slice(0));
+    const data = audio.getChannelData(0), step = Math.floor(audio.sampleRate / 60), env = [];
+    for (let i = 0; i < data.length; i += step) {
+      let sum = 0;
+      for (let j = i; j < Math.min(i + step, data.length); j++) sum += data[j] * data[j];
+      env.push(Math.sqrt(sum / step));
+    }
+    let peak = 0.0001; for (const x of env) if (x > peak) peak = x;
+    return env.map((x) => Math.min(1, x / peak));
+  } catch { return null; }
+}
+
+function voiceLevel() {         // 0..1 right now, or null when not playing the Kairos voice
+  if (!voiceEnv || voiceAudio.paused) return null;
+  return voiceEnv[Math.floor(voiceAudio.currentTime * 60)] || 0;
+}
+
+function stopSpeaking() {
+  speakSeq++;
+  try { speechSynthesis.cancel(); } catch { /* ignore */ }
+  if (!voiceAudio.paused) voiceAudio.pause();
+  voiceEnv = null;
+  if (document.documentElement.dataset.state === "speaking") setOrb("");
+}
+
+async function fetchSpeech(text) {
+  const v = chosenVoice();
+  const res = await fetch("/api/tts", { method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, voice: v.startsWith("k:") ? v.slice(2) : "" }) });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "voice unavailable");
+  const type = res.headers.get("content-type") || "audio/wav";
+  const buf = await res.arrayBuffer();
+  return { url: URL.createObjectURL(new Blob([buf], { type })), env: await envelopeOf(buf) };
+}
+
+function playClip(clip, seq) {
+  return new Promise((resolve, reject) => {
+    if (seq !== speakSeq) return resolve();
+    voiceEnv = clip.env;
+    voiceAudio.onended = () => { URL.revokeObjectURL(clip.url); resolve(); };
+    voiceAudio.onerror = () => reject(new Error("couldn't play"));
+    voiceAudio.onpause = () => { if (seq !== speakSeq) resolve(); };
+    voiceAudio.src = clip.url;
+    voiceAudio.play().then(() => setOrb("speaking")).catch(reject);
+  });
+}
+
+async function speak(text) {
+  stopSpeaking();
+  if (useKairosVoice()) {
+    const seq = speakSeq, chunks = speechChunks(text);
+    if (!document.documentElement.dataset.state) { setOrb("thinking"); coreLabels("thinking"); }
+    let started = false;
+    try {
+      let next = fetchSpeech(chunks[0]);
+      for (let i = 0; i < chunks.length; i++) {
+        const clip = await next;
+        if (seq !== speakSeq) return;
+        next = i + 1 < chunks.length ? fetchSpeech(chunks[i + 1]) : null;   // make the next piece while this one plays
+        if (next) next.catch(() => {});
+        started = true;
+        await playClip(clip, seq);
+        if (seq !== speakSeq) return;
+      }
+      voiceEnv = null;
+      if (document.documentElement.dataset.state === "speaking") setOrb("");
+      return;
+    } catch (err) {
+      if (seq !== speakSeq) return;
+      voiceEnv = null;
+      if (["thinking", "speaking"].includes(document.documentElement.dataset.state)) { setOrb(""); coreLabels(""); }
+      if (/allowance|out of characters/i.test(err.message)) toast(err.message);
+      if (started) return;              // it got partway; don't start over in another voice
+    }
+  }
+  phoneSpeak(text);
+}
+
+function phoneSpeak(text) {
   if (!("speechSynthesis" in window)) return;
   const clean = text.replace(/\*\*?/g, "").replace(/^\s*[-•]\s+/gm, "").replace(/[#`_]/g, "");
   const u = new SpeechSynthesisUtterance(clean);
@@ -391,6 +530,7 @@ function speak(text) {
   u.onend = u.onerror = () => { if (document.documentElement.dataset.state === "speaking") setOrb(""); };
   u.onboundary = () => {
     $$(".orb").forEach((o) => { o.classList.remove("beat"); void o.offsetWidth; o.classList.add("beat"); });
+    if (window.corePulse) window.corePulse(0.9);
   };
   speechSynthesis.cancel();
   speechSynthesis.speak(u);
@@ -487,6 +627,7 @@ async function loadBrain() {
 }
 
 const PERSONALITY_DESC = {
+  kairos: "Your sparring partner: sharp, dry wit and fighting spirit. Makes you defend your thinking and ends with a question that sticks.",
   jarvis: "Polished and unflappable, with dry, understated wit. Anticipates what you need.",
   friend: "Warm and encouraging. Celebrates your wins and checks in on how things went.",
   coach: "Direct and candid. No fluff, pushes back on weak plans, holds you to your goals.",
@@ -502,12 +643,22 @@ async function loadPersonality() {
   sel.value = b.personality;
   $("#personality-desc").textContent = PERSONALITY_DESC[b.personality] || "";
   $("#personality-notes").value = b.personality_notes || "";
+  $("#assistant-name").value = b.name || "";
+  $("#assistant-name").dataset.saved = b.name || "";
   $("#personality-notes").dataset.saved = b.personality_notes || "";
 }
 $("#personality-select").addEventListener("change", async (e) => {
   await api("/api/brain", { method: "POST", body: { personality: e.target.value } });
   $("#personality-desc").textContent = PERSONALITY_DESC[e.target.value] || "";
   toast("Personality updated");
+});
+$("#assistant-name").addEventListener("blur", async (e) => {
+  const v = e.target.value.trim();
+  if (!v || v === e.target.dataset.saved) return;
+  try {
+    await api("/api/brain", { method: "POST", body: { name: v } });
+    e.target.dataset.saved = v; assistantName = v; document.title = v; toast("Name saved");
+  } catch (err) { toast(err.message); }
 });
 $("#personality-notes").addEventListener("blur", async (e) => {
   if (e.target.value === e.target.dataset.saved) return;
@@ -629,7 +780,7 @@ async function loadMemories() {
   $("#learn-toggle").checked = brain.learn_nightly;
   $("#web-toggle").checked = brain.web_search;
   $("#model-select").value = brain.model;
-  $("#learn-last").textContent = brain.last_learn ? "Last learned " + brain.last_learn : "It reviews the day's chats at 11:30 PM and saves what matters.";
+  $("#learn-last").textContent = brain.last_learn ? "Last learned " + brain.last_learn : "Every Sunday night it reviews the week's chats and saves what matters.";
   renderMemories();
 }
 
@@ -706,6 +857,11 @@ async function loadMore() {
   loadGoogle();
   loadICloud();
   fillVoices();
+  const vu = $("#voice-usage");
+  if (s.voice && s.voice.engine === "elevenlabs") {
+    vu.hidden = false;
+    vu.textContent = `Kairos voice this month: ${s.voice.used.toLocaleString()} of ${s.voice.limit.toLocaleString()} characters.`;
+  } else vu.hidden = true;
   shortcutKey = s.shortcut_token;
   $("#shortcut-key").textContent = "••••••••••••";
   $("#key-show").textContent = "Show";
@@ -765,22 +921,31 @@ $("#speak-toggle").addEventListener("change", (e) => store.set("speak", e.target
 $("#theme-select").addEventListener("change", (e) => { store.set("theme", e.target.value); applyTheme(e.target.value); });
 
 function fillVoices() {
-  if (!("speechSynthesis" in window)) { $("#voice-select").disabled = true; return; }
+  if (!("speechSynthesis" in window) && !kairosVoice) { $("#voice-select").disabled = true; return; }
   const sel = $("#voice-select");
-  const voices = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang))
+  const voices = (("speechSynthesis" in window) ? speechSynthesis.getVoices() : []).filter((v) => /^en/i.test(v.lang))
     .sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
-  sel.innerHTML = '<option value="">Automatic</option>';
+  sel.innerHTML = "";
+  const add = (value, label, group) => { const o = document.createElement("option"); o.value = value; o.textContent = label; (group || sel).appendChild(o); };
+  if (kairosVoice && voiceInfo.engine === "kokoro") {
+    const g = document.createElement("optgroup"); g.label = "Kairos voices (free, private)"; sel.appendChild(g);
+    for (const v of voiceInfo.voices) add(v.id === voiceInfo.default ? "" : "k:" + v.id,
+      `${v.name} (${v.id.startsWith("bm") ? "British man" : "British woman"})`, g);
+  } else if (kairosVoice) add("", "Kairos voice (ElevenLabs)");
+  const pg = document.createElement("optgroup"); pg.label = "Phone voices"; sel.appendChild(pg);
+  add(kairosVoice ? "phone" : "", "Phone voice: automatic", pg);
   for (const v of voices) {
     const o = document.createElement("option");
     o.value = v.name;
     o.textContent = `${v.name} (${v.lang.replace("_", "-")})`;
-    sel.appendChild(o);
+    pg.appendChild(o);
   }
   sel.value = store.get("voice") || "";
 }
 if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", () => { if (!$("#view-more").hidden) fillVoices(); });
-$("#voice-select").addEventListener("change", (e) => store.set("voice", e.target.value));
-$("#voice-test").addEventListener("click", () => speak(`Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}. All systems are running normally.`));
+const voiceSample = () => speak(`Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}${userName ? ", " + userName : ""}. All systems are running, which is more than I can say for your to-do list.`);
+$("#voice-select").addEventListener("change", (e) => { store.set("voice", e.target.value); voiceSample(); });
+$("#voice-test").addEventListener("click", voiceSample);
 
 $("#key-show").addEventListener("click", () => {
   const hidden = $("#key-show").textContent === "Show";
@@ -840,145 +1005,276 @@ $("#push-test").addEventListener("click", async () => {
   catch (err) { toast(err.message); }
 });
 
-// ---------------------------------------------------------- Home: dial, countdown, weather, date
-let homeData = { next: null, created: null };
-let clockTimer = null;
+// ---------------------------------------------------------- Home: the core (particle sphere + voice)
+const pad = (n) => String(n).padStart(2, "0");
+function parseLocal(s) { return new Date(s.replace(" ", "T")); }
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-(function drawTicks() {
-  const g = $("#ticks"), ns = "http://www.w3.org/2000/svg";
-  for (let i = 0; i < 60; i++) {
-    const a = (i / 60) * 2 * Math.PI, major = i % 5 === 0;
-    const r1 = major ? 126 : 129, r2 = 134;
-    const l = document.createElementNS(ns, "line");
-    l.setAttribute("x1", 150 + r1 * Math.cos(a)); l.setAttribute("y1", 150 + r1 * Math.sin(a));
-    l.setAttribute("x2", 150 + r2 * Math.cos(a)); l.setAttribute("y2", 150 + r2 * Math.sin(a));
-    if (major) l.setAttribute("class", "major");
-    g.appendChild(l);
+// ---- the sphere: ~260 points in a slowly turning ball; heartbeat when idle, reacts to voice
+const core = { energy: 0, raf: 0, pts: [], w: 0, h: 0, dpr: 1, t0: performance.now() };
+window.corePulse = (x = 1) => { core.energy = Math.min(3, core.energy + x); };
+
+(function buildPoints() {
+  const n = 260, golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / (n - 1)) * 2, r = Math.sqrt(1 - y * y), th = golden * i;
+    const depth = 0.55 + Math.random() * 0.45;               // some points sit inside the ball
+    const roll = Math.random();
+    core.pts.push({ x: Math.cos(th) * r * depth, y: y * depth, z: Math.sin(th) * r * depth,
+      c: roll < 0.08 ? "amber" : roll < 0.14 ? "white" : "cyan", s: 0.6 + Math.random() * 0.9, ph: Math.random() * 6.28 });
   }
 })();
 
-const pad = (n) => String(n).padStart(2, "0");
-function parseLocal(s) { return new Date(s.replace(" ", "T")); }
+function heartbeat(t, period) {             // "lub-dub": two quick bumps, then rest
+  const p = t % period;
+  const a = p / 0.055, b = (p - 0.2) / 0.06;
+  return Math.exp(-(a * a)) + 0.65 * Math.exp(-(b * b));
+}
 
-function tickClock() {
-  const now = new Date();
-  const h = now.getHours();
-  $("#clock-hm").textContent = `${h % 12 || 12}:${pad(now.getMinutes())}`;
-  $("#clock-ap").textContent = h < 12 ? "AM" : "PM";
-  $("#clock-s").textContent = pad(now.getSeconds());
-  $("#sec-arc").style.strokeDasharray = `${now.getSeconds() || 0.001} 60`;
+function sizeCanvas() {
+  const c = $("#sphere-canvas"), r = c.getBoundingClientRect();
+  core.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  core.w = r.width; core.h = r.height;
+  c.width = Math.round(r.width * core.dpr); c.height = Math.round(r.height * core.dpr);
+}
 
-  const arc = $("#countdown-arc"), cd = $("#next-cd");
-  if (homeData.next) {
-    const when = parseLocal(homeData.next.fire_at), left = when - now;
-    // The ring fills over the last 24 hours before a reminder (or since it was set, if sooner).
-    const windowMs = Math.min(24 * 3600e3, Math.max(60e3, when - parseLocal(homeData.next.created_at)));
-    const pct = Math.max(0, Math.min(100, 100 - (left / windowMs) * 100));
-    arc.style.strokeDasharray = `${pct} 100`;
-    arc.classList.toggle("calm", left > 3600e3);
-    cd.classList.toggle("calm", left > 3600e3);
-    if (left <= 0) { cd.textContent = "now"; setTimeout(loadHome, 5000); }
-    else {
-      const s = Math.floor(left / 1000), d = Math.floor(s / 86400);
-      cd.textContent = d >= 1
-        ? `in ${d}d ${Math.floor((s % 86400) / 3600)}h`
-        : `in ${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
-    }
-  } else {
-    // No reminders: the ring shows how much of the day has gone by.
-    const start = new Date(now); start.setHours(0, 0, 0, 0);
-    arc.style.strokeDasharray = `${((now - start) / 864e3).toFixed(2)} 100`;
-    arc.classList.add("calm");
-    cd.textContent = "";
+function drawCore(now) {
+  const c = $("#sphere-canvas"), ctx = c.getContext("2d");
+  if (!core.w) sizeCanvas();
+  const { w, h, dpr } = core, t = (now - core.t0) / 1000;
+  const state = document.documentElement.dataset.state || "";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) * 0.33;
+
+  // how the core moves in each state
+  const beat = state === "listening" ? heartbeat(t, 0.62) : state === "thinking" ? 0.4 + 0.3 * Math.sin(t * 9) : heartbeat(t, 1.05);
+  core.energy *= 0.92;
+  const lvl = state === "speaking" ? voiceLevel() : null;
+  const e = core.energy + (state === "speaking" ? (lvl !== null ? 1.1 * lvl : 0.35 + 0.25 * Math.sin(t * 7)) : 0);
+  const spin = reduceMotion ? 0 : t * (state === "thinking" ? 1.6 : state === "listening" ? 0.45 : 0.18);
+  const scale = 1 + (reduceMotion ? 0.02 : 0.05) * beat + 0.06 * e;
+  const swirl = state === "thinking" ? 0.85 + 0.08 * Math.sin(t * 5) : 1;
+
+  // glow behind the ball
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.6);
+  g.addColorStop(0, `rgba(95,227,255,${0.20 + 0.18 * beat + 0.15 * e})`);
+  g.addColorStop(0.45, "rgba(30,120,160,0.10)");
+  g.addColorStop(1, "rgba(6,12,24,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.6, 0, 6.283); ctx.fill();
+
+  // outer rings
+  ctx.lineWidth = 1;
+  for (const [k, a] of [[1.28, 0.16], [1.45, 0.09]]) {
+    ctx.strokeStyle = `rgba(95,227,255,${a + 0.12 * beat})`;
+    ctx.beginPath(); ctx.arc(cx, cy, R * k * (1 + 0.02 * beat), 0, 6.283); ctx.stroke();
+  }
+  ctx.strokeStyle = `rgba(95,227,255,${0.55 + 0.3 * e})`; ctx.lineWidth = 2;
+  ctx.beginPath(); const a0 = -spin * 1.5; ctx.arc(cx, cy, R * 1.28, a0, a0 + 0.9); ctx.stroke();
+  ctx.lineWidth = 1;
+
+  // points
+  const cosY = Math.cos(spin), sinY = Math.sin(spin), tilt = 0.35, cosX = Math.cos(tilt), sinX = Math.sin(tilt);
+  const listenJitter = state === "listening" ? 0.04 + 0.05 * e : 0;
+  for (const p of core.pts) {
+    let x = p.x * cosY - p.z * sinY, z = p.x * sinY + p.z * cosY, y = p.y;
+    const y2 = y * cosX - z * sinX; z = y * sinX + z * cosX; y = y2;
+    const wob = 1 + listenJitter * Math.sin(t * 9 + p.ph);
+    const k = R * scale * swirl * wob;
+    const px = cx + x * k, py = cy + y * k, depth = (z + 1) / 2;   // 0 = back, 1 = front
+    const alpha = 0.18 + 0.75 * depth;
+    const size = (0.7 + 1.5 * depth) * p.s * (1 + 0.4 * e);
+    ctx.fillStyle = p.c === "amber" ? `rgba(255,181,71,${alpha})` : p.c === "white" ? `rgba(235,250,255,${alpha})` : `rgba(95,227,255,${alpha})`;
+    ctx.beginPath(); ctx.arc(px, py, size, 0, 6.283); ctx.fill();
+  }
+
+  // the core: small ring and bright centre
+  const cr = R * 0.07 * (1 + 0.35 * beat + 0.4 * e);
+  ctx.strokeStyle = "rgba(95,227,255,0.9)"; ctx.beginPath(); ctx.arc(cx, cy, cr * 1.8, 0, 6.283); ctx.stroke();
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr * 1.4);
+  cg.addColorStop(0, "rgba(255,255,255,1)"); cg.addColorStop(0.5, "rgba(95,227,255,0.95)"); cg.addColorStop(1, "rgba(95,227,255,0)");
+  ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, cr * 1.4, 0, 6.283); ctx.fill();
+
+  core.raf = requestAnimationFrame(drawCore);
+}
+
+function startCore() {
+  cancelAnimationFrame(core.raf);
+  if ($("#view-home").hidden || document.hidden) return;
+  sizeCanvas();
+  core.raf = requestAnimationFrame(drawCore);
+}
+window.addEventListener("resize", () => { if (!$("#view-home").hidden) sizeCanvas(); });
+document.addEventListener("visibilitychange", () => (document.hidden ? cancelAnimationFrame(core.raf) : startCore()));
+
+// ---- labels that follow the state
+function coreState(state) {
+  if ((document.documentElement.dataset.state || "") !== (state || "")) setOrb(state);
+  coreLabels(state);
+}
+function coreLabels(state) {
+  const sub = { listening: "LISTENING…", thinking: "THINKING…", speaking: "SPEAKING · TAP TO STOP" }[state] || "VOICE-DRIVEN · TAP TO TALK";
+  $("#core-sub").textContent = sub;
+  const rec = $("#rec-status");
+  rec.classList.toggle("live", state === "listening");
+  rec.querySelector("span").textContent = state === "listening" ? "REC" : "STANDBY";
+}
+// keep labels right when speech ends on its own
+new MutationObserver(() => {
+  const st = document.documentElement.dataset.state || "";
+  if (!$("#view-home").hidden && !["listening", "thinking"].includes(st)) coreLabels(st);
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["data-state"] });
+
+function plain(text) {
+  return text.replace(/\*\*?/g, "").replace(/^\s*[-•]\s+/gm, "· ").replace(/[#`_]/g, "").replace(/\n+/g, " ").trim();
+}
+function showCaption(you, ai, full = false) {
+  $("#cap-you").textContent = you ? `“${you}”` : "";
+  const p = plain(ai || "");
+  const short = p.length > 240 ? p.slice(0, 237).replace(/\s+\S*$/, "") + "…" : p;
+  $("#cap-ai").textContent = short;
+  $("#cap-more").hidden = !full && short === p;
+}
+$("#cap-more").addEventListener("click", () => switchView("chat"));
+
+// ---- talking from Home: tap the sphere
+let homeRecog = null;
+async function askFromHome(text) {
+  showCaption(text, "");
+  coreState("thinking");
+  try {
+    const { reply } = await api("/api/chat", { method: "POST", body: { message: text } });
+    showCaption(text, reply);
+    if (useKairosVoice()) setOrb("");       // speak() shows "thinking" until the voice arrives
+    else coreState("");
+    speak(reply);
+  } catch (err) {
+    coreState("");
+    showCaption(text, err.message);
   }
 }
 
-function startClock() {
-  tickClock();
-  clearInterval(clockTimer);
-  clockTimer = setInterval(() => { if (!$("#view-home").hidden) tickClock(); }, 1000);
+$("#sphere").addEventListener("click", () => {
+  const st = document.documentElement.dataset.state || "";
+  if (st === "speaking") { stopSpeaking(); coreState(""); return; }
+  if (st === "thinking") return;
+  if (homeRecog) { homeRecog.stop(); return; }
+  if (!Recognition) {
+    toast("Voice input isn't available in this browser. Type instead, or use the Hey Siri shortcut.");
+    switchView("chat"); setTimeout(() => input.focus(), 50);
+    return;
+  }
+  stopSpeaking();
+  // A silent clip "unlocks" sound on iPhone so the reply can be spoken later.
+  if (!useKairosVoice()) { try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch { /* ignore */ } }
+  const r = new Recognition();
+  homeRecog = r;
+  r.lang = "en-US"; r.interimResults = true; r.continuous = false;
+  let finalText = "", interim = "";
+  coreState("listening");
+  showCaption("", "");
+  r.onresult = (e) => {
+    interim = "";
+    for (const res of e.results) (res.isFinal ? (finalText = res[0].transcript) : (interim += res[0].transcript));
+    $("#cap-you").textContent = finalText || interim;
+    window.corePulse(0.6);
+  };
+  r.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed")
+      toast("Microphone access is off. Allow it in Settings, or type instead.");
+  };
+  r.onend = () => {
+    homeRecog = null;
+    const text = (finalText || interim).trim();
+    if (text) askFromHome(text);
+    else { coreState(""); greet(); }
+  };
+  try { r.start(); } catch { homeRecog = null; coreState(""); toast("Couldn't start the mic."); }
+});
+$("#home-type").addEventListener("click", () => { switchView("chat"); setTimeout(() => input.focus(), 50); });
+
+// ---- gauges
+function setGauge(id, value, label, pct, warn = false) {
+  const g = $(id);
+  g.querySelector(".g-val").textContent = value;
+  g.querySelector(".g-label").textContent = label;
+  g.querySelector(".g-arc").style.strokeDasharray = `${Math.max(0.5, Math.min(100, pct))} 100`;
+  g.classList.toggle("warn", warn);
 }
 
+function greet() {
+  const h = new Date().getHours();
+  const part = h < 5 ? "evening" : h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+  showCaption("", `Good ${part}${userName ? ", " + userName : ""}. Tap the core to talk.`);
+}
+
+let lastAgenda = null, lastRem = null;
 async function loadHome() {
   const now = new Date();
-  $("#dt-month").textContent = now.toLocaleDateString(undefined, { month: "long" });
-  $("#dt-day").textContent = now.getDate();
-  $("#dt-week").textContent = now.toLocaleDateString(undefined, { weekday: "long" });
-  $("#dt-year").textContent = now.getFullYear();
-  updateStatus();
-  startClock();
+  $("#core-name").textContent = (assistantName || "Kairos").toUpperCase();
+  $("#side-right").textContent = now.toLocaleDateString(undefined, { month: "short", day: "2-digit" }).toUpperCase().replace(" ", " · ");
+  $("#side-left").textContent = (userName || "YOU").toUpperCase().slice(0, 8) + " · " + pad(now.getHours() < 12 ? 1 : 2);
+  if (!$("#cap-ai").textContent && !(document.documentElement.dataset.state)) greet();
+  startCore();
 
-  const start = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
-  const [rems, tasks, spend, wx, settings, agenda] = await Promise.all([
+  const t0 = performance.now();
+  const ok = await api("/api/me").then(() => true).catch(() => false);
+  const ms = Math.round(performance.now() - t0);
+  $("#sys-status").classList.toggle("down", !ok);
+  $("#sys-status span").textContent = ok ? "SYS.ONLINE" : "OFFLINE";
+  $("#core-status").textContent = `LATENCY: ${ok ? ms + "MS" : "--"} · ENCRYPTED · STATUS: ${ok ? "NOMINAL" : "NO SIGNAL"}`;
+  if (!ok) return;
+
+  const [rems, tasks, wx, agenda] = await Promise.all([
     api("/api/reminders").catch(() => []),
-    api("/api/tasks?include_done=false").catch(() => []),
-    api(`/api/expenses?start=${start}`).catch(() => ({ total: 0 })),
+    api("/api/tasks?include_done=true").catch(() => []),
     api("/api/weather").catch(() => ({ set: false })),
-    api("/api/settings").catch(() => ({})),
     api("/api/agenda").catch(() => ({ connected: false })),
   ]);
-  homeData.next = rems[0] || null;
-  $("#next-label").textContent = homeData.next ? "Next reminder" : "No reminders set";
-  $("#next-text").textContent = homeData.next ? homeData.next.text : "Ask me to remind you";
-  tickClock();
+  lastAgenda = agenda; lastRem = rems[0] || null;
 
-  if (!wx.set) {
-    $("#wx-place").textContent = "Weather"; $("#wx-temp").textContent = "--°";
-    $("#wx-cond").textContent = "Tap to set your city"; $("#wx-hl").textContent = "";
-  } else if (!wx.ok) {
-    $("#wx-place").textContent = settings.weather_city || "Weather"; $("#wx-temp").textContent = "--°";
-    $("#wx-cond").textContent = "Unavailable right now"; $("#wx-hl").textContent = "";
-  } else {
-    $("#wx-place").textContent = wx.place;
-    $("#wx-temp").textContent = `${wx.temp}°`;
-    $("#wx-cond").textContent = wx.condition;
-    $("#wx-hl").textContent = `High ${wx.high}°, low ${wx.low}°`;
-  }
+  // TO-DOS: open count; ring = share of today's list already done
+  const localToday = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const open = tasks.filter((t) => !t.done);
+  const overdue = open.filter((t) => { const d = prettyDue(t.due); return d && d.overdue; }).length;
+  const dueNow = open.filter((t) => t.due && t.due.slice(0, 10) <= localToday).length;
+  const doneToday = tasks.filter((t) => t.done && (t.done_at || "").startsWith(localToday)).length;
+  const denom = doneToday + dueNow;
+  setGauge("#g-todos", String(open.length), overdue ? `${overdue} OVERDUE` : "TO-DOS",
+           denom ? (doneToday / denom) * 100 : 100, overdue > 0);
 
-  const overdue = tasks.filter((t) => { const d = prettyDue(t.due); return d && d.overdue; }).length;
-  const row = $("#home-readouts"); row.innerHTML = "";
-  row.append(
-    overdue
-      ? readout(String(overdue), overdue === 1 ? "overdue to-do" : "overdue to-dos", () => switchView("tasks"), true)
-      : readout(String(tasks.length), tasks.length === 1 ? "open to-do" : "open to-dos", () => switchView("tasks")),
-    readout("$" + Math.round(spend.total).toLocaleString(), `spent in ${now.toLocaleDateString(undefined, { month: "short" })}`, () => switchView("more")),
-  );
-  if (agenda.connected) {
-    const nx = agenda.next;
-    row.prepend(nx
-      ? readout(parseLocal(nx.start).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }), nx.title, () => { switchView("chat"); })
-      : readout(String(agenda.events.length), agenda.events.length ? "events today, all done" : "no events today", () => switchView("chat")));
-  }
-  row.classList.toggle("three", row.children.length === 3);
-  updateStatus(settings.push_devices);
+  // NEXT: next calendar event, else next reminder; ring fills as it gets closer (last 24h)
+  const nx = agenda && agenda.next ? { when: parseLocal(agenda.next.start), title: agenda.next.title }
+           : lastRem ? { when: parseLocal(lastRem.fire_at), title: lastRem.text } : null;
+  if (nx) {
+    const left = nx.when - now;
+    const time = nx.when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/i, (m) => m.trim()[0].toLowerCase());
+    const sameDay = nx.when.toDateString() === now.toDateString();
+    setGauge("#g-next", sameDay ? time : nx.when.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase(),
+             nx.title.toUpperCase().slice(0, 14), 100 - Math.max(0, Math.min(1, left / 864e5)) * 100, left < 36e5);
+    $("#g-next").title = nx.title;
+  } else setGauge("#g-next", "—", "ALL CLEAR", 100);
+
+  // WEATHER: temp; ring = where now sits between today's low and high
+  if (wx.set && wx.ok) {
+    const span = Math.max(1, wx.high - wx.low);
+    setGauge("#g-wx", `${wx.temp}°`, wx.place.toUpperCase().slice(0, 14), ((wx.temp - wx.low) / span) * 100);
+    $("#g-wx").title = `${wx.condition}. High ${wx.high}°, low ${wx.low}°`;
+  } else setGauge("#g-wx", "SET", wx.set ? "UNAVAILABLE" : "WEATHER", 0);
 }
 
-function updateStatus(devices) {
-  const speakOn = store.get("speak") === "1";
-  $("#st-voice").classList.toggle("on", speakOn);
-  $("#st-voice .st-text").textContent = speakOn ? "Voice replies on" : "Voice replies off";
-  if (devices !== undefined) {
-    const on = devices > 0 && "Notification" in window && Notification.permission === "granted";
-    $("#st-push").classList.toggle("on", on);
-    $("#st-push .st-text").textContent = on ? "Alerts on" : "Alerts off";
-  }
-}
-
-$("#st-voice").addEventListener("click", () => {
-  store.set("speak", store.get("speak") === "1" ? "0" : "1");
-  updateStatus();
-  toast(store.get("speak") === "1" ? "Replies will be spoken out loud" : "Replies will be text only");
+$("#g-todos").addEventListener("click", () => switchView("tasks"));
+$("#g-next").addEventListener("click", () => {
+  if (!$("#g-next").title) return;
+  showCaption("", `Next up: ${$("#g-next").title}.`);
 });
-$("#st-push").addEventListener("click", () => switchView("more"));
-$("#tile-date").addEventListener("click", () => switchView("tasks"));
-$("#tile-weather").addEventListener("click", async () => {
+$("#g-wx").addEventListener("click", async () => {
+  if ($("#g-wx").title) { showCaption("", $("#g-wx").title + "."); return; }
   const city = prompt("Which city should the weather show? For example: Irvine, CA");
   if (!city || !city.trim()) return;
   try { await api("/api/settings", { method: "POST", body: { weather_city: city.trim() } }); toast("Weather city saved"); loadHome(); }
   catch (err) { toast(err.message); }
 });
-$("#home-type").addEventListener("click", () => { switchView("chat"); setTimeout(() => input.focus(), 50); });
-$("#home-talk").addEventListener("click", () => { switchView("chat"); $("#mic-btn").click(); });
 
 $("#city-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1102,10 +1398,7 @@ $("#ic-disconnect").addEventListener("click", async () => {
 
 // Tap the orb to stop Jarvis talking.
 document.addEventListener("click", (e) => {
-  if (e.target.closest(".orb") && document.documentElement.dataset.state === "speaking") {
-    speechSynthesis.cancel();
-    setOrb("");
-  }
+  if (e.target.closest(".orb") && document.documentElement.dataset.state === "speaking") stopSpeaking();
 });
 
 // ---------------------------------------------------------- start

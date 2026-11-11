@@ -44,54 +44,38 @@
       <button data-action="logout">Sign out</button>
     </div>
 
-    <!-- Home -->
-    <section id="view-home" class="view home">
-      <div class="status-row">
-        <button type="button" id="st-voice" class="status"><span class="dot"></span><span class="st-text">Voice replies off</span></button>
-        <button type="button" id="st-push" class="status"><span class="dot"></span><span class="st-text">Alerts off</span></button>
+    <!-- Home: the core -->
+    <section id="view-home" class="view core-home">
+      <div class="sys-row">
+        <span class="sys" id="sys-status"><i></i><span>SYS.ONLINE</span></span>
+        <span class="rec" id="rec-status"><i></i><span>STANDBY</span></span>
       </div>
 
-      <div class="dial orb" id="dial">
-        <i class="ring r1"></i><i class="ring r3"></i><i class="ring r2"></i>
-        <svg class="dial-svg" viewBox="0 0 300 300" aria-hidden="true">
-          <g id="ticks"></g>
-          <circle class="arc-track" cx="150" cy="150" r="118"/>
-          <circle class="arc" id="countdown-arc" cx="150" cy="150" r="118" pathLength="100"/>
-          <circle class="sec-track" cx="150" cy="150" r="146"/>
-          <circle class="sec" id="sec-arc" cx="150" cy="150" r="146" pathLength="60"/>
-        </svg>
-        <i class="core"></i>
-        <div class="dial-center">
-          <div class="time"><span id="clock-hm">--:--</span><span class="ampm"><span id="clock-ap"></span><span id="clock-s"></span></span></div>
-          <div class="next">
-            <span id="next-label" class="next-label">Next reminder</span>
-            <span id="next-text" class="next-text"></span>
-            <span id="next-cd" class="next-cd"></span>
-          </div>
-        </div>
-      </div>
-
-      <div class="tiles">
-        <button type="button" class="tile" id="tile-weather">
-          <span class="tile-head" id="wx-place">Weather</span>
-          <b id="wx-temp">--°</b>
-          <span id="wx-cond">Tap to set your city</span>
-          <span id="wx-hl" class="tile-foot"></span>
+      <div class="sphere-wrap">
+        <span class="side-label left" id="side-left">KAI · 01</span>
+        <button type="button" id="sphere" class="sphere" aria-label="Tap to talk">
+          <canvas id="sphere-canvas" aria-hidden="true"></canvas>
         </button>
-        <button type="button" class="tile" id="tile-date">
-          <span class="tile-head" id="dt-month"></span>
-          <b id="dt-day"></b>
-          <span id="dt-week"></span>
-          <span id="dt-year" class="tile-foot"></span>
-        </button>
+        <span class="side-label right" id="side-right"></span>
       </div>
 
-      <div class="readouts" id="home-readouts"></div>
+      <h1 class="core-title"><span class="dash" aria-hidden="true"></span><span id="core-name">KAIROS</span><span class="dash" aria-hidden="true"></span></h1>
+      <p class="core-sub" id="core-sub">VOICE-DRIVEN · TAP TO TALK</p>
 
-      <div class="home-actions">
-        <button type="button" id="home-type" class="secondary">Type a message</button>
-        <button type="button" id="home-talk" class="talk"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg><span>Talk</span></button>
+      <div class="core-caption" aria-live="polite">
+        <p class="cap-you" id="cap-you"></p>
+        <p class="cap-ai" id="cap-ai"></p>
+        <button type="button" class="cap-more" id="cap-more" hidden>Open in chat</button>
       </div>
+
+      <div class="gauges">
+        <button type="button" class="gauge" id="g-todos"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="g-track" cx="40" cy="40" r="34"/><circle class="g-arc" cx="40" cy="40" r="34" pathLength="100"/></svg><b class="g-val">--</b><span class="g-label">TO-DOS</span></button>
+        <button type="button" class="gauge" id="g-next"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="g-track" cx="40" cy="40" r="34"/><circle class="g-arc" cx="40" cy="40" r="34" pathLength="100"/></svg><b class="g-val">--</b><span class="g-label">NEXT</span></button>
+        <button type="button" class="gauge" id="g-wx"><svg viewBox="0 0 80 80" aria-hidden="true"><circle class="g-track" cx="40" cy="40" r="34"/><circle class="g-arc" cx="40" cy="40" r="34" pathLength="100"/></svg><b class="g-val">--</b><span class="g-label">WEATHER</span></button>
+      </div>
+
+      <p class="core-status" id="core-status">LATENCY: -- · ENCRYPTED · STATUS: --</p>
+      <button type="button" class="core-type" id="home-type">Type instead</button>
     </section>
 
     <!-- Chat -->
@@ -136,6 +120,10 @@
       <div id="brain-about" class="brain-pane">
         <div class="card" id="personality-card">
           <h2>Its personality</h2>
+          <div class="field-row two">
+            <label for="assistant-name">Name</label>
+            <input id="assistant-name" maxlength="30" autocomplete="off">
+          </div>
           <select id="personality-select" aria-label="Personality"></select>
           <p id="personality-desc" class="muted small-text"></p>
           <textarea id="personality-notes" rows="2" maxlength="1000" placeholder="Your own touches, e.g. call me Kai; roast me a little when I procrastinate; throw in some Korean now and then"></textarea>
@@ -167,13 +155,14 @@
 
       <div id="brain-memories" class="brain-pane" hidden>
         <div class="card">
-          <label class="switch-row"><span>Learn from our chats every night</span><input id="learn-toggle" type="checkbox"></label>
+          <label class="switch-row"><span>Learn from our chats every week</span><input id="learn-toggle" type="checkbox"></label>
           <label class="switch-row"><span>Look things up on the web</span><input id="web-toggle" type="checkbox"></label>
           <div class="field-row two">
             <label for="model-select">Thinks with</label>
             <select id="model-select">
-              <option value="opus">Claude Opus (deepest, recommended)</option>
-              <option value="sonnet">Claude Sonnet (faster, half the cost)</option>
+              <option value="haiku">Claude Haiku (cheapest, recommended)</option>
+              <option value="sonnet">Claude Sonnet (smarter, ~20× the cost)</option>
+              <option value="opus">Claude Opus (deepest, ~40× the cost)</option>
             </select>
           </div>
           <p id="learn-last" class="muted small-text"></p>
@@ -255,7 +244,8 @@
           <select id="voice-select"><option value="">Automatic</option></select>
         </div>
         <button id="voice-test" class="secondary small">Play a sample</button>
-        <p class="muted small-text">For more natural voices, download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices.</p>
+        <p id="voice-usage" class="muted small-text" hidden></p>
+        <p class="muted small-text">For more natural phone voices, download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices.</p>
       </div>
 
       <div class="card">
