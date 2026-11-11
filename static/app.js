@@ -8,16 +8,20 @@ let assistantName = "Assistant";
 let userName = "";
 
 // ---------------------------------------------------------- look: theme + orb state
+const SKINS = { stealth: "#000000", arc: "#01030a", tactical: "#03060d" };
 function applyTheme(t) {
-  document.documentElement.dataset.theme = t;
-  const dark = t === "hud" || matchMedia("(prefers-color-scheme: dark)").matches;
-  $("#theme-color").setAttribute("content", t === "hud" ? "#060c18" : dark ? "#16171a" : "#f6f3ee");
+  const skin = SKINS[t] ? t : "";
+  document.documentElement.dataset.theme = skin ? "hud" : t;
+  if (skin) document.documentElement.dataset.skin = skin; else delete document.documentElement.dataset.skin;
+  const dark = skin || t === "hud" || matchMedia("(prefers-color-scheme: dark)").matches;
+  $("#theme-color").setAttribute("content", skin ? SKINS[skin] : t === "hud" ? "#060c18" : dark ? "#16171a" : "#f6f3ee");
+  if (window.coreColors) window.coreColors();
 }
 function setOrb(state) {
   if (state) document.documentElement.dataset.state = state;
   else delete document.documentElement.dataset.state;
 }
-applyTheme(localStorage && (() => { try { return localStorage.getItem("theme"); } catch { return null; } })() || "hud");
+applyTheme(localStorage && (() => { try { return localStorage.getItem("theme"); } catch { return null; } })() || "stealth");
 
 // ---------------------------------------------------------- helpers
 async function api(path, opts = {}) {
@@ -104,6 +108,7 @@ async function showApp() {
     userName = me.name && me.name !== "the user" && me.name !== "there" ? me.name : "";
     voiceInfo = me.voice || null;
     kairosVoice = !!(voiceInfo && voiceInfo.available);
+    serverListen = !!(voiceInfo && voiceInfo.listen);
     document.title = assistantName;
   } catch { /* handled by api() */ }
   switchView("home");
@@ -343,13 +348,115 @@ function clearAttachments() { pending = []; renderTray(); }
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recog = null;
 
+// ---- listening through our own server. Works in the home-screen app (where iPhone blocks its
+// built-in speech recognition) and the recording never leaves your server.
+let serverListen = false;
+function canServerListen() {
+  return serverListen && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && !!window.MediaRecorder;
+}
+
+function wavFromFloat(data, rate) {
+  const buf = new ArrayBuffer(44 + data.length * 2), d = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => d.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); d.setUint32(4, 36 + data.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true); d.setUint32(24, rate, true);
+  d.setUint32(28, rate * 2, true); d.setUint16(32, 2, true); d.setUint16(34, 16, true); str(36, "data"); d.setUint32(40, data.length * 2, true);
+  for (let i = 0; i < data.length; i++) d.setInt16(44 + i * 2, Math.max(-1, Math.min(1, data[i])) * 32767, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function toWav16k(blob, ctx) {
+  const ab = await blob.arrayBuffer();
+  const audio = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const off = new OAC(1, Math.max(1, Math.ceil(audio.duration * 16000)), 16000);
+  const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start();
+  const out = await off.startRendering();
+  return wavFromFloat(out.getChannelData(0), 16000);
+}
+
+// Record until you stop talking (or tap again), then turn it into text on the server.
+// onLevel(0..1) while listening; onStop() when recording ends and transcribing starts.
+function startEar(onLevel, onStop) {
+  let finish = null, cancelled = false, stopEarly = false;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();                  // made during the tap so iPhone lets it run
+  ctx.resume && ctx.resume().catch(() => {});
+  const promise = (async () => {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (err) {
+      ctx.close().catch(() => {});
+      throw new Error(err && err.name === "NotAllowedError"
+        ? "Kairos needs the microphone. On iPhone: Settings → Apps → Safari → Microphone → Allow, then reopen the app."
+        : "Couldn't start the microphone.");
+    }
+    const an = ctx.createAnalyser(); an.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const rec = new MediaRecorder(stream);
+    const parts = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+    const stopped = new Promise((r) => { rec.onstop = r; });
+    rec.start(250);
+    const t0 = performance.now();
+    let heard = false, lastLoud = t0, noise = 0.005, timer = 0;
+    await new Promise((resolve) => {
+      finish = resolve;
+      if (stopEarly) return resolve();
+      const tick = () => {
+        an.getFloatTimeDomainData(buf);
+        let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length), now = performance.now();
+        if (now - t0 < 350) noise = Math.max(0.004, noise * 0.8 + rms * 0.2);   // learn the room's background noise
+        if (rms > Math.max(0.015, noise * 3)) { heard = true; lastLoud = now; }
+        if (onLevel) onLevel(Math.min(1, rms * 10));
+        if ((heard && now - lastLoud > 1400) || (!heard && now - t0 > 8000) || now - t0 > 45000) return resolve();
+        timer = setTimeout(tick, 50);
+      };
+      tick();
+    });
+    clearTimeout(timer);
+    if (rec.state !== "inactive") rec.stop();
+    await stopped;
+    stream.getTracks().forEach((t) => t.stop());   // mic light goes off; speaker volume returns to normal
+    if (onStop) onStop();
+    try {
+      if (cancelled || !parts.length) return "";
+      const wav = await toWav16k(new Blob(parts, { type: rec.mimeType || "audio/mp4" }), ctx);
+      const res = await fetch("/api/transcribe", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "audio/wav" }, body: wav });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Couldn't hear that.");
+      return ((await res.json()).text || "").trim();
+    } finally { ctx.close().catch(() => {}); }
+  })();
+  return {
+    promise,
+    stop: () => { stopEarly = true; if (finish) finish(); },
+    cancel: () => { cancelled = true; stopEarly = true; if (finish) finish(); },
+  };
+}
+
 $("#mic-btn").addEventListener("click", () => {
+  if (recog) { recog.stop(); return; }
+  if (canServerListen()) {
+    stopSpeaking();
+    $("#mic-btn").classList.add("listening");
+    setOrb("listening");
+    const ear = startEar(null, () => { $("#mic-btn").classList.remove("listening"); setOrb("thinking"); });
+    recog = ear;
+    ear.promise.then((text) => {
+      recog = null; setOrb("");
+      if (text) sendMessage(text, { spoken: true }); else toast("Didn't catch that. Tap the mic and try again.");
+    }).catch((err) => { recog = null; setOrb(""); $("#mic-btn").classList.remove("listening"); toast(err.message); });
+    return;
+  }
   if (!Recognition) {
     toast("Tap the 🎤 on your keyboard to dictate, or use the Hey Siri shortcut.");
     input.focus();
     return;
   }
-  if (recog) { recog.stop(); return; }
   stopSpeaking();
   recog = new Recognition();
   recog.lang = "en-US";
@@ -852,7 +959,7 @@ async function loadMore() {
   $("#brief-days").value = s.brief_days; $("#brief-time").value = s.brief_time;
   $("#review-day").value = s.review_day; $("#review-time").value = s.review_time;
   $("#speak-toggle").checked = store.get("speak") === "1";
-  $("#theme-select").value = document.documentElement.dataset.theme;
+  $("#theme-select").value = document.documentElement.dataset.skin || document.documentElement.dataset.theme;
   $("#city-input").value = s.weather_city || "";
   loadGoogle();
   loadICloud();
@@ -1013,6 +1120,13 @@ const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 // ---- the sphere: ~260 points in a slowly turning ball; heartbeat when idle, reacts to voice
 const core = { energy: 0, raf: 0, pts: [], w: 0, h: 0, dpr: 1, t0: performance.now() };
 window.corePulse = (x = 1) => { core.energy = Math.min(3, core.energy + x); };
+// Colours and extra detail come from the chosen look (CSS variables --core-a/b/c and --core-mode).
+window.coreColors = () => {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n, d) => (cs.getPropertyValue(n).trim() || d);
+  core.ca = v("--core-a", "95, 227, 255"); core.cb = v("--core-b", "255, 181, 71"); core.cc = v("--core-c", "235, 250, 255");
+  core.mode = v("--core-mode", "");
+};
 
 (function buildPoints() {
   const n = 260, golden = Math.PI * (3 - Math.sqrt(5));
@@ -1038,14 +1152,79 @@ function sizeCanvas() {
   c.width = Math.round(r.width * core.dpr); c.height = Math.round(r.height * core.dpr);
 }
 
+// ---- "free" mode (Stealth): a loose cloud of beads drifting on their own, no rings.
+// Blue while listening, red while talking; the cloud breathes with a heartbeat.
+const FREE_COLORS = {
+  idle:      [[61, 134, 255], [150, 196, 255]],
+  listening: [[20, 120, 255], [110, 190, 255]],
+  thinking:  [[90, 110, 255], [170, 160, 255]],
+  speaking:  [[255, 45, 64],  [255, 140, 120]],
+};
+function initFree() {
+  core.free = [];
+  for (let i = 0; i < 230; i++) {
+    const u = Math.max(1e-4, Math.random()), r = Math.min(1.5, 0.55 * Math.sqrt(-2 * Math.log(u)));   // dense middle, loose edges
+    const a = Math.random() * 6.283, roll = Math.random();
+    core.free.push({ hx: Math.cos(a) * r, hy: Math.sin(a) * r * 0.92, z: Math.random(),
+      f1: 0.15 + Math.random() * 0.35, f2: 0.2 + Math.random() * 0.5, p1: Math.random() * 6.28, p2: Math.random() * 6.28,
+      amp: 0.05 + Math.random() * 0.12, s: 0.5 + Math.random() * 1.1, k: roll < 0.1 ? 2 : roll < 0.35 ? 1 : 0 });
+  }
+  core.col = FREE_COLORS.idle.map((c) => c.slice());
+}
+function drawFree(ctx, t, state, beat, e, cx, cy, R) {
+  if (!core.free) initFree();
+  const target = FREE_COLORS[state] || FREE_COLORS.idle;
+  for (let j = 0; j < 2; j++) for (let c = 0; c < 3; c++) core.col[j][c] += (target[j][c] - core.col[j][c]) * 0.07;
+  const [m, h] = core.col.map((c) => c.map(Math.round).join(","));
+  // soft glow, no hard edge
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.5);
+  g.addColorStop(0, `rgba(${m},${0.16 + 0.14 * beat + 0.18 * e})`); g.addColorStop(0.5, `rgba(${m},0.05)`); g.addColorStop(1, `rgba(${m},0)`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, cx * 2, cy * 2);
+  const spread = 1 + 0.07 * beat + 0.16 * e + (state === "listening" ? -0.06 : 0);
+  const speed = state === "thinking" ? 2.6 : state === "listening" ? 1.6 : state === "speaking" ? 1.3 : 1;
+  const swirl = reduceMotion ? 0 : t * 0.04;
+  for (const p of core.free) {
+    const tt = reduceMotion ? 0 : t * speed;
+    const rot = swirl * (1.4 - p.z) * (state === "thinking" ? 6 : 1);
+    const hx = p.hx * Math.cos(rot) - p.hy * Math.sin(rot), hy = p.hx * Math.sin(rot) + p.hy * Math.cos(rot);
+    let x = hx + p.amp * Math.sin(tt * p.f1 + p.p1) + p.amp * 0.5 * Math.sin(tt * p.f2 * 1.7 + p.p2);
+    let y = hy + p.amp * Math.cos(tt * p.f2 + p.p2) + p.amp * 0.5 * Math.cos(tt * p.f1 * 1.3 + p.p1);
+    if (state === "listening") { x += 0.02 * Math.sin(t * 13 + p.p1) * (1 + e); y += 0.02 * Math.cos(t * 11 + p.p2) * (1 + e); }
+    x *= spread; y *= spread;
+    const dist = Math.hypot(x, y), fade = Math.max(0, Math.min(1, (1.75 - dist) / 0.7));   // edges dissolve
+    if (fade <= 0) continue;
+    const alpha = (0.25 + 0.7 * p.z) * fade;
+    const size = (0.6 + 1.6 * p.z) * p.s * (1 + 0.35 * e);
+    const col = p.k === 2 ? "255,255,255" : p.k === 1 ? h : m;
+    ctx.fillStyle = `rgba(${col},${alpha})`;
+    ctx.beginPath(); ctx.arc(cx + x * R, cy + y * R, size, 0, 6.283); ctx.fill();
+  }
+  // bright heart
+  const cr = R * 0.06 * (1 + 0.4 * beat + 0.5 * e);
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr * 2.2);
+  cg.addColorStop(0, "rgba(255,255,255,0.95)"); cg.addColorStop(0.35, `rgba(${h},0.8)`); cg.addColorStop(1, `rgba(${m},0)`);
+  ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, cr * 2.2, 0, 6.283); ctx.fill();
+}
+
 function drawCore(now) {
   const c = $("#sphere-canvas"), ctx = c.getContext("2d");
   if (!core.w) sizeCanvas();
   const { w, h, dpr } = core, t = (now - core.t0) / 1000;
+  if (!core.ca) window.coreColors();
+  const A = core.ca, B = core.cb, C = core.cc;
   const state = document.documentElement.dataset.state || "";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const cx = w / 2, cy = h / 2, R = Math.min(w, h) * 0.33;
+  if (core.mode === "free") {
+    const beatF = state === "listening" ? heartbeat(t, 0.62) : state === "thinking" ? 0.4 + 0.3 * Math.sin(t * 9) : heartbeat(t, 1.05);
+    core.energy *= 0.92;
+    const lvl = state === "speaking" ? voiceLevel() : null;
+    const eF = core.energy + (state === "speaking" ? (lvl !== null ? 1.1 * lvl : 0.35 + 0.25 * Math.sin(t * 7)) : 0);
+    drawFree(ctx, t, state, reduceMotion ? 0.3 * beatF : beatF, eF, cx, cy, R);
+    core.raf = requestAnimationFrame(drawCore);
+    return;
+  }
 
   // how the core moves in each state
   const beat = state === "listening" ? heartbeat(t, 0.62) : state === "thinking" ? 0.4 + 0.3 * Math.sin(t * 9) : heartbeat(t, 1.05);
@@ -1058,18 +1237,18 @@ function drawCore(now) {
 
   // glow behind the ball
   const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.6);
-  g.addColorStop(0, `rgba(95,227,255,${0.20 + 0.18 * beat + 0.15 * e})`);
-  g.addColorStop(0.45, "rgba(30,120,160,0.10)");
+  g.addColorStop(0, `rgba(${A},${0.20 + 0.18 * beat + 0.15 * e})`);
+  g.addColorStop(0.45, `rgba(${A},0.06)`);
   g.addColorStop(1, "rgba(6,12,24,0)");
   ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.6, 0, 6.283); ctx.fill();
 
   // outer rings
   ctx.lineWidth = 1;
   for (const [k, a] of [[1.28, 0.16], [1.45, 0.09]]) {
-    ctx.strokeStyle = `rgba(95,227,255,${a + 0.12 * beat})`;
+    ctx.strokeStyle = `rgba(${A},${a + 0.12 * beat})`;
     ctx.beginPath(); ctx.arc(cx, cy, R * k * (1 + 0.02 * beat), 0, 6.283); ctx.stroke();
   }
-  ctx.strokeStyle = `rgba(95,227,255,${0.55 + 0.3 * e})`; ctx.lineWidth = 2;
+  ctx.strokeStyle = `rgba(${A},${0.55 + 0.3 * e})`; ctx.lineWidth = 2;
   ctx.beginPath(); const a0 = -spin * 1.5; ctx.arc(cx, cy, R * 1.28, a0, a0 + 0.9); ctx.stroke();
   ctx.lineWidth = 1;
 
@@ -1084,16 +1263,54 @@ function drawCore(now) {
     const px = cx + x * k, py = cy + y * k, depth = (z + 1) / 2;   // 0 = back, 1 = front
     const alpha = 0.18 + 0.75 * depth;
     const size = (0.7 + 1.5 * depth) * p.s * (1 + 0.4 * e);
-    ctx.fillStyle = p.c === "amber" ? `rgba(255,181,71,${alpha})` : p.c === "white" ? `rgba(235,250,255,${alpha})` : `rgba(95,227,255,${alpha})`;
+    ctx.fillStyle = p.c === "amber" ? `rgba(${B},${alpha})` : p.c === "white" ? `rgba(${C},${alpha})` : `rgba(${A},${alpha})`;
     ctx.beginPath(); ctx.arc(px, py, size, 0, 6.283); ctx.fill();
   }
 
   // the core: small ring and bright centre
   const cr = R * 0.07 * (1 + 0.35 * beat + 0.4 * e);
-  ctx.strokeStyle = "rgba(95,227,255,0.9)"; ctx.beginPath(); ctx.arc(cx, cy, cr * 1.8, 0, 6.283); ctx.stroke();
+  ctx.strokeStyle = `rgba(${A},0.9)`; ctx.beginPath(); ctx.arc(cx, cy, cr * 1.8, 0, 6.283); ctx.stroke();
   const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr * 1.4);
-  cg.addColorStop(0, "rgba(255,255,255,1)"); cg.addColorStop(0.5, "rgba(95,227,255,0.95)"); cg.addColorStop(1, "rgba(95,227,255,0)");
+  cg.addColorStop(0, "rgba(255,255,255,1)"); cg.addColorStop(0.5, `rgba(${A},0.95)`); cg.addColorStop(1, `rgba(${A},0)`);
   ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, cr * 1.4, 0, 6.283); ctx.fill();
+
+  // look-specific detail
+  if (core.mode === "radar") {
+    const sweep = (reduceMotion ? 0 : t * (state === "thinking" ? 3.2 : 1.1)) % 6.283;
+    const sg = ctx.createConicGradient ? ctx.createConicGradient(sweep, cx, cy) : null;
+    if (sg) {
+      sg.addColorStop(0, `rgba(${A},${0.28 + 0.2 * e})`); sg.addColorStop(0.12, `rgba(${A},0)`); sg.addColorStop(1, `rgba(${A},0)`);
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(cx, cy, R * 1.45, 0, 6.283); ctx.fill();
+    }
+    ctx.setLineDash([2, 6]); ctx.strokeStyle = `rgba(${A},0.35)`;
+    for (const k of [0.55, 0.9]) { ctx.beginPath(); ctx.arc(cx, cy, R * k * 1.45, 0, 6.283); ctx.stroke(); }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = `rgba(${A},0.18)`; ctx.beginPath();
+    ctx.moveTo(cx - R * 1.5, cy); ctx.lineTo(cx + R * 1.5, cy); ctx.moveTo(cx, cy - R * 1.5); ctx.lineTo(cx, cy + R * 1.5); ctx.stroke();
+  } else if (core.mode === "ticks") {
+    const rot = reduceMotion ? 0 : -t * 0.08;
+    for (let i = 0; i < 72; i++) {
+      const ang = rot + (i / 72) * 6.283, major = i % 6 === 0, r0 = R * 1.36, r1 = r0 + (major ? R * 0.09 : R * 0.04);
+      ctx.strokeStyle = `rgba(${major ? A : B},${major ? 0.7 : 0.35})`; ctx.lineWidth = major ? 1.6 : 1;
+      ctx.beginPath(); ctx.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0); ctx.lineTo(cx + Math.cos(ang) * r1, cy + Math.sin(ang) * r1); ctx.stroke();
+    }
+    ctx.lineWidth = 1;
+    const tgt = R * 0.2;
+    ctx.strokeStyle = `rgba(${C},0.5)`; ctx.beginPath();
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      ctx.moveTo(cx + sx * R * 1.18, cy + sy * R * 1.18 - sy * tgt); ctx.lineTo(cx + sx * R * 1.18, cy + sy * R * 1.18); ctx.lineTo(cx + sx * R * 1.18 - sx * tgt, cy + sy * R * 1.18);
+    }
+    ctx.stroke();
+  } else if (core.mode === "halo") {
+    const rot = reduceMotion ? 0 : t * 0.25;
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 3; i++) {
+      const a0 = rot * (i % 2 ? -1 : 1) + i * 2.1;
+      ctx.strokeStyle = `rgba(${i === 1 ? C : A},${0.25 + 0.2 * beat})`;
+      ctx.beginPath(); ctx.arc(cx, cy, R * (1.36 + i * 0.07), a0, a0 + 1.4 + i * 0.5); ctx.stroke();
+    }
+    ctx.lineWidth = 1;
+  }
 
   core.raf = requestAnimationFrame(drawCore);
 }
@@ -1159,6 +1376,19 @@ $("#sphere").addEventListener("click", () => {
   if (st === "speaking") { stopSpeaking(); coreState(""); return; }
   if (st === "thinking") return;
   if (homeRecog) { homeRecog.stop(); return; }
+  if (canServerListen()) {
+    stopSpeaking();
+    coreState("listening");
+    showCaption("", "");
+    const ear = startEar((lvl) => window.corePulse(lvl * 0.3), () => { coreState("thinking"); $("#cap-you").textContent = "…"; });
+    homeRecog = ear;
+    ear.promise.then((text) => {
+      homeRecog = null;
+      if (text) askFromHome(text);
+      else { coreState(""); showCaption("", "Didn't catch that. Tap the core and try again."); }
+    }).catch((err) => { homeRecog = null; coreState(""); showCaption("", err.message); });
+    return;
+  }
   if (!Recognition) {
     toast("Voice input isn't available in this browser. Type instead, or use the Hey Siri shortcut.");
     switchView("chat"); setTimeout(() => input.focus(), 50);
