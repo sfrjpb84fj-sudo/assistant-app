@@ -23,7 +23,7 @@ fi
 say "Installing system packages (1–2 minutes)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv git curl ufw sqlite3 >/dev/null
+apt-get install -y -qq python3 python3-venv git curl ufw sqlite3 bzip2 >/dev/null
 
 say "Getting the app code"
 if [ -d "$APP_DIR/.git" ]; then
@@ -53,6 +53,18 @@ for f in kokoro-v1.0.onnx voices-v1.0.bin; do
   fi
 done
 chown -R assistant:assistant "$VOICE_DIR"
+
+say "Kairos's ears (free speech-to-text on this server, about 120 MB)"
+STT_DIR="$DATA_DIR/stt"; STT_MODEL=sherpa-onnx-moonshine-tiny-en-int8
+mkdir -p "$STT_DIR"
+if [ ! -s "$STT_DIR/$STT_MODEL/tokens.txt" ]; then
+  curl -fL --retry 3 -o "$STT_DIR/model.tar.bz2" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$STT_MODEL.tar.bz2" \
+    && tar xjf "$STT_DIR/model.tar.bz2" -C "$STT_DIR" && rm -f "$STT_DIR/model.tar.bz2" \
+    || warn "Couldn't download speech-to-text. The home-screen app won't hear you until you run this update again."
+  rm -rf "$STT_DIR/$STT_MODEL/test_wavs"
+fi
+chown -R assistant:assistant "$STT_DIR"
 # The voice needs some memory to think; give the server 2 GB of swap as a cushion.
 if ! swapon --show | grep -q .; then
   if fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile; then

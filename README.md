@@ -194,6 +194,7 @@ Kairos speaks with a natural-sounding British voice that runs on your own server
 - Long replies: the first part is spoken and the rest stays on screen.
 - If the voice ever has a problem, Kairos quietly uses the phone's voice instead.
 - The "Hey Siri" shortcut still speaks in Siri's voice. That's an Apple limit.
+- Listening also runs on your server (an open-source transcriber called Moonshine), because iPhone blocks its own speech recognition inside home-screen apps. Tap the sphere, talk, and pause: it stops by itself when you stop talking, or tap again to finish. Your recordings never leave your server.
 
 Optional, paid: to use an ElevenLabs voice instead, add `ELEVENLABS_API_KEY=` and `ELEVENLABS_VOICE_ID=` to `/etc/assistant.env` and restart (`sudo systemctl restart assistant`). The app caps it at 140,000 characters a month.
 

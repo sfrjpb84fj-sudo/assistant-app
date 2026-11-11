@@ -355,6 +355,7 @@ def get_kokoro():
         from kokoro_onnx import Kokoro
         so = ort.SessionOptions()
         so.intra_op_num_threads = max(1, min(4, os.cpu_count() or 1))
+        so.enable_cpu_mem_arena = False      # keeps memory steady on a small server
         model, voices = kokoro_files()
         sess = ort.InferenceSession(str(model), so, providers=["CPUExecutionProvider"])
         _kokoro = Kokoro.from_session(sess, str(voices))
@@ -375,6 +376,13 @@ def kokoro_speech(text: str, voice: str) -> bytes:
 
 
 def preload_voice():
+    if stt_ready():
+        try:
+            with _stt_lock:
+                get_stt()
+            log.info("Listening ready")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Couldn't load speech recognition: %s", e)
     if tts_engine() == "kokoro":
         try:
             with _kokoro_lock:
@@ -382,6 +390,78 @@ def preload_voice():
             log.info("Voice ready")
         except Exception as e:  # noqa: BLE001
             log.warning("Couldn't load the voice: %s", e)
+
+
+# ---- listening: speech to text on this server (Moonshine, open source), so it works from the
+# home-screen app (where iPhone blocks its own speech recognition) and audio never leaves the server.
+STT_MODEL = os.environ.get("STT_MODEL", "sherpa-onnx-moonshine-tiny-en-int8")
+STT_DIR = DATA_DIR / "stt" / STT_MODEL
+_stt = None
+_stt_lock = threading.Lock()
+
+
+def stt_ready() -> bool:
+    if not (STT_DIR / "tokens.txt").exists():
+        return False
+    try:
+        import sherpa_onnx  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def get_stt():
+    global _stt
+    if _stt is None:
+        import sherpa_onnx
+        d = STT_DIR
+        _stt = sherpa_onnx.OfflineRecognizer.from_moonshine(
+            preprocessor=str(d / "preprocess.onnx"), encoder=str(d / "encode.int8.onnx"),
+            uncached_decoder=str(d / "uncached_decode.int8.onnx"), cached_decoder=str(d / "cached_decode.int8.onnx"),
+            tokens=str(d / "tokens.txt"), num_threads=max(1, min(4, os.cpu_count() or 1)))
+    return _stt
+
+
+def transcribe_wav(data: bytes) -> str:
+    import io
+    import wave
+    import numpy as np
+    try:
+        w = wave.open(io.BytesIO(data))
+        if w.getsampwidth() != 2:
+            raise ValueError
+        rate, ch = w.getframerate(), w.getnchannels()
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
+    except Exception:  # noqa: BLE001
+        raise ValueError("That recording couldn't be read.")
+    if ch > 1:
+        pcm = pcm.reshape(-1, ch).mean(axis=1)
+    if len(pcm) < rate * 0.3:
+        return ""
+    with _stt_lock:
+        rec = get_stt()
+        st = rec.create_stream()
+        st.accept_waveform(rate, pcm)
+        rec.decode_stream(st)
+        return st.result.text.strip()
+
+
+@app.post("/api/transcribe")
+async def api_transcribe(request: Request, _=Depends(require_auth)):
+    if not stt_ready():
+        raise HTTPException(404, "Listening isn't set up on the server.")
+    data = await request.body()
+    if len(data) > 4_000_000:
+        raise HTTPException(413, "That recording is too long. Keep it under a minute.")
+    try:
+        import asyncio
+        text = await asyncio.to_thread(transcribe_wav, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        log.warning("Transcribe failed: %s", e)
+        raise HTTPException(502, "Couldn't make out the recording.")
+    return {"text": text}
 
 
 def tts_month_key() -> str:
@@ -392,7 +472,7 @@ def tts_status() -> dict:
     engine = tts_engine()
     used = int(get_setting(tts_month_key()) or 0)
     voices = [{"id": k, "name": v} for k, v in KOKORO_VOICES.items()] if engine == "kokoro" else []
-    return {"available": bool(engine), "engine": engine, "used": used,
+    return {"available": bool(engine), "engine": engine, "used": used, "listen": stt_ready(),
             "limit": ELEVEN_MONTHLY_CHARS if engine == "elevenlabs" else 0,
             "voices": voices, "default": DEFAULT_VOICE}
 
