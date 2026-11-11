@@ -42,6 +42,24 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 
+say "Kairos's voice (free, runs on this server; first time downloads about 340 MB)"
+VOICE_DIR="$DATA_DIR/voice"
+mkdir -p "$VOICE_DIR"
+KOKORO_URL=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
+for f in kokoro-v1.0.onnx voices-v1.0.bin; do
+  if [ ! -s "$VOICE_DIR/$f" ]; then
+    curl -fL --retry 3 -o "$VOICE_DIR/$f.part" "$KOKORO_URL/$f" && mv "$VOICE_DIR/$f.part" "$VOICE_DIR/$f" \
+      || warn "Couldn't download the voice ($f). Kairos will use the phone's voice; run this update again later."
+  fi
+done
+chown -R assistant:assistant "$VOICE_DIR"
+# The voice needs some memory to think; give the server 2 GB of swap as a cushion.
+if ! swapon --show | grep -q .; then
+  if fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile; then
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  fi
+fi
+
 if [ ! -f "$ENV_FILE" ]; then
   say "First-time settings"
   echo "Paste your Anthropic API key (starts with sk-ant-). It won't show on screen as you paste."
@@ -59,9 +77,9 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "What should the assistant call you? (for example: Alex)"
   read -r DISPLAY_NAME < /dev/tty
   DISPLAY_NAME=${DISPLAY_NAME:-there}
-  echo "What do you want to call your assistant? (press Return for: Jarvis)"
+  echo "What do you want to call your assistant? (press Return for: Kairos)"
   read -r BOT_NAME < /dev/tty
-  BOT_NAME=${BOT_NAME:-Jarvis}
+  BOT_NAME=${BOT_NAME:-Kairos}
   DISPLAY_NAME=${DISPLAY_NAME//\'/}; BOT_NAME=${BOT_NAME//\'/}
   API_KEY=$(printf '%s' "$API_KEY" | tr -d "[:space:]'")
   umask 077

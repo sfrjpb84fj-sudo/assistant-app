@@ -186,6 +186,17 @@ Do this on your Mac in Chrome. You only create the Google setup once (steps A–
 
 ---
 
+## Kairos's voice (free)
+
+Kairos speaks with a natural-sounding British voice that runs on your own server (an open-source voice called Kokoro). It's free, and nothing you hear ever leaves your server. The update command downloads it automatically (about 340 MB, once).
+
+- Pick the voice in **More → Voice**: George, Fable, Lewis or Daniel (British men), or Emma, Isabella, Alice or Lily (British women). Tap **Play a sample** to hear it.
+- Long replies: the first part is spoken and the rest stays on screen.
+- If the voice ever has a problem, Kairos quietly uses the phone's voice instead.
+- The "Hey Siri" shortcut still speaks in Siri's voice. That's an Apple limit.
+
+Optional, paid: to use an ElevenLabs voice instead, add `ELEVENLABS_API_KEY=` and `ELEVENLABS_VOICE_ID=` to `/etc/assistant.env` and restart (`sudo systemctl restart assistant`). The app caps it at 140,000 characters a month.
+
 ## Its brain (the Brain tab)
 
 **About you:** five short sections your assistant always knows: who you are, your work, your goals, how you like things done, and the people in your life. Write them yourself, or tap **Let it interview me** and answer its questions in chat. It also adds to them as it learns.

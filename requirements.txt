@@ -6,3 +6,4 @@ cryptography>=42
 caldav==3.6.0
 icalendar>=6
 recurring-ical-events>=3
+kokoro-onnx>=0.4
