@@ -311,7 +311,7 @@ def logout(request: Request, response: Response):
 @app.get("/api/me")
 def me(_=Depends(require_auth)):
     return {"name": USER_NAME, "assistant": assistant_name(), "configured": bool(ANTHROPIC_API_KEY),
-            "voice": tts_status()}
+            "voice": tts_status(), "brief": current_brief()}
 
 
 # ================================================================ voice
@@ -321,6 +321,7 @@ KOKORO_DIR = DATA_DIR / "voice"
 KOKORO_VOICES = {"bm_george": "George", "bm_fable": "Fable", "bm_lewis": "Lewis", "bm_daniel": "Daniel",
                  "bf_emma": "Emma", "bf_isabella": "Isabella", "bf_alice": "Alice", "bf_lily": "Lily"}
 DEFAULT_VOICE = os.environ.get("KOKORO_VOICE", "bm_george")
+KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", "1.08") or 1.08)   # a touch brisker sounds more natural
 TTS_CHUNK_MAX = 600
 _kokoro = None
 _kokoro_lock = threading.Lock()
@@ -366,8 +367,10 @@ def kokoro_speech(text: str, voice: str) -> bytes:
     import io
     import wave
     import numpy as np
+    t0 = time.time()
     with _kokoro_lock:                       # one at a time; the server only has one CPU
-        samples, rate = get_kokoro().create(text, voice=voice, speed=1.0, lang="en-gb")
+        samples, rate = get_kokoro().create(text, voice=voice, speed=KOKORO_SPEED, lang="en-gb")
+    log.info("voice: %d chars -> %.1fs audio in %.1fs", len(text), len(samples) / rate, time.time() - t0)
     pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -422,6 +425,54 @@ def get_stt():
     return _stt
 
 
+VAD_PATH = DATA_DIR / "stt" / "silero_vad.onnx"
+
+
+def speech_segments(pcm, rate: int) -> list:
+    """Keep only the stretches that are actually speech, so background noise and long pauses
+    don't get 'heard' as made-up words."""
+    import numpy as np
+    if rate != 16000:
+        n = int(len(pcm) * 16000 / rate)
+        pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm).astype(np.float32)
+    if not VAD_PATH.exists():
+        return [pcm]
+    import sherpa_onnx
+    cfg = sherpa_onnx.VadModelConfig()
+    cfg.silero_vad.model = str(VAD_PATH)
+    cfg.silero_vad.threshold = 0.5
+    cfg.silero_vad.min_silence_duration = 0.5
+    cfg.silero_vad.min_speech_duration = 0.25
+    cfg.silero_vad.max_speech_duration = 20
+    cfg.sample_rate = 16000
+    vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=90)
+    win = cfg.silero_vad.window_size
+    for i in range(0, len(pcm), win):
+        vad.accept_waveform(pcm[i:i + win])
+    vad.flush()
+    segs = []
+    while not vad.empty():
+        segs.append((vad.front.start, np.array(vad.front.samples, dtype=np.float32)))
+        vad.pop()
+    # Speech that starts long after you stopped is usually the TV or someone else: keep the first run.
+    kept, last_end = [], None
+    for start, seg in segs:
+        if last_end is not None and start - last_end > 16000 * 2.5:
+            break
+        kept.append(seg)
+        last_end = start + len(seg)
+    return kept
+
+
+def tidy_transcript(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    out = []
+    for p_ in parts:
+        if p_ and (not out or p_.lower().strip(" -") != out[-1].lower().strip(" -")):
+            out.append(p_)
+    return re.sub(r"\s+", " ", " ".join(out)).strip(" -")
+
+
 def transcribe_wav(data: bytes) -> str:
     import io
     import wave
@@ -439,11 +490,16 @@ def transcribe_wav(data: bytes) -> str:
     if len(pcm) < rate * 0.3:
         return ""
     with _stt_lock:
+        segs = speech_segments(pcm, rate)
         rec = get_stt()
-        st = rec.create_stream()
-        st.accept_waveform(rate, pcm)
-        rec.decode_stream(st)
-        return st.result.text.strip()
+        texts = []
+        for seg in segs:
+            st = rec.create_stream()
+            st.accept_waveform(16000, seg)
+            rec.decode_stream(st)
+            if st.result.text.strip():
+                texts.append(st.result.text.strip())
+    return tidy_transcript(" ".join(texts))
 
 
 @app.post("/api/transcribe")
@@ -559,11 +615,15 @@ def add_task(list_name: str, title: str, notes: str = "", due: str = "") -> dict
     with db() as conn:
         cur = conn.execute("INSERT INTO tasks (list,title,notes,due,created_at) VALUES (?,?,?,?,?)",
                            (list_name, title, notes.strip()[:2000], due.strip()[:40], now_str()))
-        row = conn.execute("SELECT * FROM tasks WHERE id=?", (cur.lastrowid,)).fetchone()
+        tid = cur.lastrowid
+    todoist_push_new(tid)
+    with db() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
     return task_dict(row)
 
 
 def get_tasks(list_name: str | None = None, include_done: bool = False) -> list[dict]:
+    todoist_sync_if_stale()
     q, args = "SELECT * FROM tasks WHERE 1=1", []
     if list_name:
         q += " AND list=?"
@@ -588,6 +648,7 @@ def update_task(task_id: int, **fields) -> dict:
         for k, v in allowed.items():
             conn.execute(f"UPDATE tasks SET {k}=? WHERE id=?", (v, task_id))
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    todoist_push_update(dict(row), allowed)
     return task_dict(row)
 
 
@@ -630,8 +691,326 @@ def api_update_task(task_id: int, body: TaskPatch, _=Depends(require_auth)):
 @app.delete("/api/tasks/{task_id}")
 def api_delete_task(task_id: int, _=Depends(require_auth)):
     with db() as conn:
+        row = conn.execute("SELECT todoist_id FROM tasks WHERE id=?", (task_id,)).fetchone()
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    if row and row["todoist_id"]:
+        todoist_commands([{"type": "item_delete", "args": {"id": row["todoist_id"]}}])
     return {"ok": True}
+
+
+# ================================================================ Todoist: one shared to-do list
+# When connected, Kairos's lists ARE your Todoist: the "Work" project is the work list, everything
+# else is personal. Things added anywhere (Todoist app, the Claude app, meeting sweeps) show up here.
+TODOIST_URL = "https://api.todoist.com/api/v1/sync"
+_todoist_lock = threading.Lock()
+_todoist_last = 0.0
+
+
+def todoist_token() -> str:
+    return get_setting("todoist_token")
+
+
+def _todoist_call(form: dict, token: str | None = None) -> dict:
+    tok = token or todoist_token()
+    data = urllib.parse.urlencode({k: (v if isinstance(v, str) else json.dumps(v)) for k, v in form.items()}).encode()
+    req = urllib.request.Request(TODOIST_URL, data=data, method="POST", headers={
+        "Authorization": f"Bearer {tok}", "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "kairos/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise ValueError("Todoist didn't accept that token.")
+        raise ValueError(f"Todoist returned {e.code}.")
+    except (urllib.error.URLError, TimeoutError):
+        raise ValueError("Couldn't reach Todoist.")
+
+
+def todoist_commands(cmds: list[dict]) -> dict:
+    if not todoist_token() or not cmds:
+        return {}
+    for c in cmds:
+        c.setdefault("uuid", secrets.token_hex(16))
+    try:
+        return _todoist_call({"commands": cmds})
+    except ValueError as e:
+        log.warning("Todoist: %s", e)
+        return {}
+
+
+def todoist_work_project(projects: list[dict] | None = None) -> str:
+    pid = get_setting("todoist_work_project")
+    if pid and projects is None:
+        return pid
+    for p_ in projects or []:
+        if (p_.get("name") or "").strip().lower() == "work" and not p_.get("is_deleted") and not p_.get("is_archived"):
+            set_setting("todoist_work_project", p_["id"])
+            return p_["id"]
+    return pid
+
+
+def _todoist_due(due: str) -> dict | None:
+    due = (due or "").strip()
+    if not due:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
+        return {"date": due}
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})", due)
+    if m:
+        return {"date": f"{m.group(1)}T{m.group(2)}:00"}
+    return {"string": due}
+
+
+def todoist_sync(force: bool = False) -> dict:
+    """Pull every open Todoist task into the local lists (and notice ones finished elsewhere)."""
+    global _todoist_last
+    if not todoist_token():
+        return {"connected": False}
+    with _todoist_lock:
+        if not force and time.time() - _todoist_last < 45:
+            return {"connected": True, "skipped": True}
+        try:
+            data = _todoist_call({"sync_token": "*", "resource_types": ["projects", "items"]})
+        except ValueError as e:
+            log.warning("Todoist sync: %s", e)
+            return {"connected": True, "error": str(e)}
+        _todoist_last = time.time()
+        work = todoist_work_project(data.get("projects", []))
+        bridge = todoist_bridge_project(data.get("projects", []))
+        live = {}
+        bridge_items = []
+        for it in data.get("items", []):
+            if it.get("checked") or it.get("is_deleted"):
+                continue
+            if bridge and it.get("project_id") == bridge:
+                bridge_items.append(it)
+                continue
+            due = it.get("due") or {}
+            d = (due.get("date") or "")[:16].replace("T", " ")
+            live[str(it["id"])] = ("work" if it.get("project_id") == work else "personal",
+                                   (it.get("content") or "")[:300], (it.get("description") or "")[:2000], d)
+        added = 0
+        with db() as conn:
+            have = {r["todoist_id"]: r for r in conn.execute("SELECT * FROM tasks WHERE todoist_id!=''")}
+            for tid_, (lst, title, notes, due) in live.items():
+                if tid_ in have:
+                    r = have[tid_]
+                    if r["done"]:
+                        conn.execute("UPDATE tasks SET done=0, done_at='' WHERE id=?", (r["id"],))
+                    conn.execute("UPDATE tasks SET list=?, title=?, notes=?, due=? WHERE id=?",
+                                 (lst, title or r["title"], notes, due, r["id"]))
+                else:
+                    conn.execute("INSERT INTO tasks (list,title,notes,due,created_at,todoist_id) VALUES (?,?,?,?,?,?)",
+                                 (lst, title or "(untitled)", notes, due, now_str(), tid_))
+                    added += 1
+            for tid_, r in have.items():          # finished (or deleted) in Todoist
+                if tid_ not in live and not r["done"]:
+                    conn.execute("UPDATE tasks SET done=1, done_at=? WHERE id=?", (now_str(), r["id"]))
+        handled = bridge_receive(bridge_items) if bridge else 0
+        if bridge:
+            bridge_publish_memory(bridge, bridge_items)
+        return {"connected": True, "open": len(live), "added": added, "bridge": handled}
+
+
+def todoist_sync_if_stale():
+    if todoist_token() and time.time() - _todoist_last > 60:
+        todoist_sync()
+
+
+def todoist_push_new(task_id: int):
+    if not todoist_token():
+        return
+    with db() as conn:
+        r = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if not r or r["todoist_id"]:
+        return
+    temp = secrets.token_hex(8)
+    args = {"content": r["title"], "description": r["notes"] or ""}
+    if r["list"] == "work" and todoist_work_project():
+        args["project_id"] = todoist_work_project()
+    due = _todoist_due(r["due"])
+    if due:
+        args["due"] = due
+    res = todoist_commands([{"type": "item_add", "temp_id": temp, "args": args}])
+    real = (res.get("temp_id_mapping") or {}).get(temp)
+    if real:
+        with db() as conn:
+            conn.execute("UPDATE tasks SET todoist_id=? WHERE id=?", (str(real), task_id))
+
+
+def todoist_push_update(row: dict, changed: dict):
+    tid_ = row.get("todoist_id")
+    if not tid_ or not todoist_token():
+        return
+    cmds = []
+    if "done" in changed:
+        cmds.append({"type": "item_close" if changed["done"] else "item_uncomplete", "args": {"id": tid_}})
+    upd = {}
+    if "title" in changed:
+        upd["content"] = row["title"]
+    if "notes" in changed:
+        upd["description"] = row["notes"]
+    if "due" in changed:
+        upd["due"] = _todoist_due(row["due"])
+    if upd:
+        cmds.append({"type": "item_update", "args": {"id": tid_, **upd}})
+    if "list" in changed:
+        if row["list"] == "work" and todoist_work_project():
+            cmds.append({"type": "item_move", "args": {"id": tid_, "project_id": todoist_work_project()}})
+        elif row["list"] == "personal":
+            inbox = get_setting("todoist_inbox")
+            if inbox:
+                cmds.append({"type": "item_move", "args": {"id": tid_, "project_id": inbox}})
+    todoist_commands(cmds)
+
+
+# ---- the bridge: Claude-app Kairos <-> this app, through a Todoist project called "Kairos Bridge".
+# Claude's scheduled tasks (morning brief, weekly review, money review, meeting sweep) post here;
+# this app delivers them (push notification, Home screen, spoken on tap, saved in chat) and files
+# "[remember]" notes into memory. This app keeps one "[memory]" task there with your profile and
+# memories so the Claude side knows what Kairos knows. No public door to your server is needed.
+BRIDGE_NAME = "Kairos Bridge"
+MEMORY_ITEM_TITLE = "[memory] What Kairos knows (kept up to date by the Kairos app; don't edit)"
+
+
+def todoist_bridge_project(projects: list[dict]) -> str:
+    for p_ in projects:
+        if (p_.get("name") or "").strip().lower() == BRIDGE_NAME.lower() and not p_.get("is_deleted") and not p_.get("is_archived"):
+            set_setting("todoist_bridge", p_["id"])
+            return p_["id"]
+    if time.time() - float(get_setting("todoist_bridge_tried") or 0) < 3600:
+        return ""
+    set_setting("todoist_bridge_tried", str(time.time()))
+    temp = secrets.token_hex(8)
+    res = todoist_commands([{"type": "project_add", "temp_id": temp, "args": {"name": BRIDGE_NAME, "color": "blue"}}])
+    pid = (res.get("temp_id_mapping") or {}).get(temp, "")
+    if pid:
+        set_setting("todoist_bridge", str(pid))
+    return str(pid)
+
+
+def bridge_receive(items: list[dict]) -> int:
+    seen = set(json.loads(get_setting("bridge_seen") or "[]"))
+    done, close = 0, []
+    for it in items:
+        iid, content = str(it["id"]), (it.get("content") or "").strip()
+        body = (it.get("description") or "").strip()
+        if content.lower().startswith("[memory]"):
+            continue
+        if iid in seen:
+            close.append(iid)
+            continue
+        m = re.match(r"\[remember(?::(\w+))?\]\s*(.*)", content, re.I | re.S)
+        if m:
+            fact = (m.group(2) or body).strip()
+            if fact:
+                add_memory(fact, m.group(1) or "fact", "claude app")
+        else:
+            m2 = re.match(r"\[(brief|review|money|note)\]\s*(.*)", content, re.I)
+            kind = (m2.group(1).lower() if m2 else "note")
+            title = (m2.group(2) if m2 else content).strip() or "Kairos"
+            text = body or title
+            save_message("assistant", f"**{title}**\n\n{text}")
+            set_setting("home_brief", json.dumps({"title": title, "text": text, "kind": kind, "at": time.time(), "seen": False}))
+            icon = {"brief": "☀️", "review": "🗓", "money": "💳"}.get(kind, "✦")
+            send_push(f"{icon} {title}", plain_preview(text), tag=f"bridge-{kind}")
+        seen.add(iid)
+        close.append(iid)
+        done += 1
+    if close:
+        todoist_commands([{"type": "item_close", "args": {"id": i}} for i in close])
+        set_setting("bridge_seen", json.dumps(list(seen)[-200:]))
+    return done
+
+
+def plain_preview(text: str, n: int = 160) -> str:
+    t = re.sub(r"[*_#`>]+", "", text)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t if len(t) <= n else t[: n - 1].rsplit(" ", 1)[0] + "…"
+
+
+def memory_digest() -> str:
+    prof = get_profile()
+    parts = [f"## {PROFILE_SECTIONS[k]}\n{v.strip()}" for k, v in prof.items() if v.strip()]
+    mems = get_memories()
+    if mems:
+        parts.append("## Things Kairos has learned\n" + "\n".join(f"- ({m['category']}) {m['fact']}" for m in mems[-150:]))
+    with db() as conn:
+        open_n = conn.execute("SELECT COUNT(*) c FROM tasks WHERE done=0").fetchone()["c"]
+    parts.append(f"_Updated {now_str()} · {open_n} open to-dos_")
+    return "\n\n".join(parts)[:15000]
+
+
+def bridge_publish_memory(bridge: str, items: list[dict]):
+    text = memory_digest()
+    h = hashlib.sha256(text.split("_Updated")[0].encode()).hexdigest()
+    if h == get_setting("bridge_memory_hash"):
+        return
+    existing = next((it for it in items if (it.get("content") or "").lower().startswith("[memory]")), None)
+    if existing:
+        todoist_commands([{"type": "item_update", "args": {"id": existing["id"], "description": text}}])
+    else:
+        todoist_commands([{"type": "item_add", "temp_id": secrets.token_hex(8),
+                           "args": {"content": MEMORY_ITEM_TITLE, "description": text, "project_id": bridge}}])
+    set_setting("bridge_memory_hash", h)
+
+
+def current_brief() -> dict | None:
+    try:
+        b = json.loads(get_setting("home_brief") or "null")
+    except ValueError:
+        return None
+    if not b or b.get("seen") or time.time() - b.get("at", 0) > 20 * 3600:
+        return None
+    return b
+
+
+@app.post("/api/brief/seen")
+def api_brief_seen(_=Depends(require_auth)):
+    b = current_brief()
+    if b:
+        b["seen"] = True
+        set_setting("home_brief", json.dumps(b))
+    return {"ok": True}
+
+
+class TodoistIn(BaseModel):
+    token: str = Field(min_length=20, max_length=100)
+
+
+@app.get("/api/todoist")
+def api_todoist_status(_=Depends(require_auth)):
+    return {"connected": bool(todoist_token()), "work_project": bool(get_setting("todoist_work_project"))}
+
+
+@app.post("/api/todoist")
+def api_todoist_connect(body: TodoistIn, _=Depends(require_auth)):
+    tok = body.token.strip()
+    try:
+        data = _todoist_call({"sync_token": "*", "resource_types": ["projects"]}, token=tok)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    set_setting("todoist_token", tok)
+    projects = data.get("projects", [])
+    work = todoist_work_project(projects)
+    for p_ in projects:
+        if p_.get("inbox_project"):
+            set_setting("todoist_inbox", p_["id"])
+    # Send up anything already on Kairos's lists so there's one list from now on.
+    with db() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM tasks WHERE done=0 AND todoist_id=''")]
+    for i in ids:
+        todoist_push_new(i)
+    result = todoist_sync(force=True)
+    return {"connected": True, "work_project": bool(work), "sent": len(ids), **result}
+
+
+@app.delete("/api/todoist")
+def api_todoist_disconnect(_=Depends(require_auth)):
+    for k in ("todoist_token", "todoist_work_project", "todoist_inbox", "todoist_bridge", "bridge_memory_hash"):
+        set_setting(k, "")
+    return {"connected": False}
 
 
 # ================================================================ the brain: profile + long-term memory
@@ -677,6 +1056,9 @@ with db() as _c:   # upgrade older databases
         _c.execute("ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'you'")
     if "updated_at" not in cols:
         _c.execute("ALTER TABLE memories ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+    tcols = {r["name"] for r in _c.execute("PRAGMA table_info(tasks)")}
+    if "todoist_id" not in tcols:
+        _c.execute("ALTER TABLE tasks ADD COLUMN todoist_id TEXT NOT NULL DEFAULT ''")
 
 
 def get_profile() -> dict:
@@ -2876,6 +3258,11 @@ def deliver(title: str, text: str, tag: str):
 def scheduler_tick(now: datetime | None = None):
     """Runs every 30 seconds. Each job remembers when it last ran, so nothing fires twice."""
     now = now or now_local()
+    if todoist_token() and time.time() - _todoist_last > 120:
+        try:
+            todoist_sync()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Todoist sync failed: %s", e)
     stamp = now.strftime("%Y-%m-%d %H:%M")
     today = now.date().isoformat()
     dow = WEEKDAYS[now.weekday()]

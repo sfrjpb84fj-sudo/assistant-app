@@ -64,6 +64,9 @@ if [ ! -s "$STT_DIR/$STT_MODEL/tokens.txt" ]; then
     || warn "Couldn't download speech-to-text. The home-screen app won't hear you until you run this update again."
   rm -rf "$STT_DIR/$STT_MODEL/test_wavs"
 fi
+[ -s "$STT_DIR/silero_vad.onnx" ] || curl -fL --retry 3 -o "$STT_DIR/silero_vad.onnx" \
+  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" \
+  || warn "Couldn't download the speech detector; listening still works without it."
 chown -R assistant:assistant "$STT_DIR"
 # The voice needs some memory to think; give the server 2 GB of swap as a cushion.
 if ! swapon --show | grep -q .; then
